@@ -91,6 +91,175 @@ support server, and shows:
 
 No email is delivered and all ticket data is synthetic.
 
+## End-to-end Streamable HTTP quickstart
+
+This walkthrough generates a signed policy, creates a development JWT, starts
+the authenticated relay, and connects an MCP client. Run every command from the
+repository root:
+
+```bash
+unset VIRTUAL_ENV
+uv sync
+```
+
+`unset VIRTUAL_ENV` avoids uv selecting an unrelated active virtual
+environment. It is unnecessary if no other environment is active.
+
+### 1. Generate the signed policy
+
+The policy embeds the approved upstream command, ordered arguments, working
+directory, tool rules, and subject rules. The relay will not accept runtime
+overrides for this launch configuration.
+
+```bash
+uv run agent-trust-generate \
+  --output-dir config \
+  --tools policy_specs/support_demo.json \
+  --server-id support-mcp \
+  --arg=-m \
+  --arg=demo_support_mcp.server
+```
+
+This creates `config/policy.json`, `config/keyring.json`, and the private
+`config/signing-key.pem`. Existing files are not overwritten. If these files
+already exist and are still valid, reuse them. Use `--force` only when you
+intend to rotate and replace all three policy files.
+
+### 2. Create the JWT secret and mint a token
+
+Create a local HS256 signing secret once:
+
+```bash
+openssl rand -hex 32 > config/local-jwt-secret
+chmod 600 config/local-jwt-secret
+```
+
+The secret is ignored by this repository's `.gitignore`. Do not give it to an
+MCP client. Mint a test token whose group matches the policy:
+
+```bash
+uv run agent-trust-mint-jwt \
+  --secret-file config/local-jwt-secret \
+  --issuer agenttrust-local \
+  --audience http://127.0.0.1:8000/mcp \
+  --name test-agent \
+  --group support-managers \
+  --lifetime-seconds 3600
+```
+
+Copy the token printed by this command. The issuer and audience must exactly
+match the relay options in the next step. Mint another token after it expires.
+
+### 3. Start the relay
+
+Run the relay in its own terminal and leave it running:
+
+```bash
+uv run agent-trust-relay \
+  --transport streamable-http \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --http-path /mcp \
+  --policy config/policy.json \
+  --keyring config/keyring.json \
+  --audit-log config/audit.jsonl \
+  --jwt-secret-file config/local-jwt-secret \
+  --jwt-issuer agenttrust-local \
+  --jwt-audience http://127.0.0.1:8000/mcp
+```
+
+The relay should report that Uvicorn is listening on
+`http://127.0.0.1:8000`. Lines such as `Processing request of type
+CallToolRequest` confirm that requests reached the relay. Tool results are
+returned to the MCP client; they are not printed in the relay terminal.
+
+### 4. Connect an MCP client with the JWT
+
+In a second terminal, place the token—not the signing secret—in an environment
+variable:
+
+```bash
+export AGENTTRUST_JWT='paste-the-token-here'
+```
+
+Save the following as `mcp_client.py`:
+
+```python
+import asyncio
+import os
+
+import httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+
+
+async def main() -> None:
+    token = os.environ["AGENTTRUST_JWT"]
+    url = "http://127.0.0.1:8000/mcp"
+
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {token}"}
+    ) as http_client:
+        async with streamable_http_client(
+            url,
+            http_client=http_client,
+        ) as (read, write, _get_session_id):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                tools = await session.list_tools()
+                print("Permitted tools:", [tool.name for tool in tools.tools])
+
+                ticket = await session.call_tool(
+                    "ticket.get",
+                    {"ticket_id": "481"},
+                )
+                print("ticket.get:", ticket.isError)
+                for item in ticket.content:
+                    print(getattr(item, "text", item))
+
+                draft = await session.call_tool(
+                    "summary.save_draft",
+                    {
+                        "destination": "support-manager-drafts",
+                        "summary": "Ticket 481 was reviewed.",
+                    },
+                )
+                print("summary.save_draft:", draft.isError)
+                for item in draft.content:
+                    print(getattr(item, "text", item))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Run the client:
+
+```bash
+uv run python mcp_client.py
+```
+
+The client prints only the tools permitted for `test-agent` and the
+`support-managers` group, followed by both tool results. To inspect
+authorization decisions in another terminal, run:
+
+```bash
+tail -f config/audit.jsonl
+```
+
+Because `--audit-log` is configured, allow and deny decisions are written to
+that file instead of the relay terminal. Stop `tail` and the relay with
+Ctrl+C, and remove the JWT from the client shell when finished:
+
+```bash
+unset AGENTTRUST_JWT
+```
+
+Local HS256 JWT mode is for development only. Anyone with
+`config/local-jwt-secret` can mint any principal or group. Production use
+requires TLS and validation against a trusted OIDC/JWKS identity provider.
+
 ## Generating a persistent policy
 
 From the repository root, generate a policy for the included synthetic support

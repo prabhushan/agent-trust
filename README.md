@@ -2,8 +2,9 @@
 
 AgentTrust is a deterministic authorization layer for MCP tool calls. A trusted
 administrator signs a reusable policy that approves specific MCP server launch
-descriptors, tools, and argument constraints. A stdio relay verifies that
-policy and checks every proposed `tools/call` before forwarding it.
+descriptors, tools, and argument constraints. A relay verifies that policy and
+checks every proposed `tools/call` before forwarding it. Clients can connect
+over stdio or Streamable HTTP; the approved upstream remains a stdio server.
 
 This model is intentionally not session-based. A policy can be reused by
 independent relay processes until it expires.
@@ -180,10 +181,12 @@ production. The example keeps it in memory only.
 
 ## Running the relay
 
-The relay fronts exactly one stdio upstream:
+The relay fronts exactly one stdio upstream. Stdio remains the default
+client-facing transport and is normally launched by an MCP client:
 
 ```bash
 uv run agent-trust-relay \
+  --transport stdio \
   --policy /absolute/path/policy.json \
   --keyring /absolute/path/keyring.json \
   --server-id support-mcp \
@@ -193,6 +196,35 @@ uv run agent-trust-relay \
   --cwd /absolute/path/to/repository \
   --audit-log /absolute/path/agent-trust-audit.jsonl
 ```
+
+To run the same `agent-trust-relay` command as an always-on Streamable HTTP
+service:
+
+```bash
+uv run agent-trust-relay \
+  --transport streamable-http \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --policy /absolute/path/policy.json \
+  --keyring /absolute/path/keyring.json \
+  --server-id support-mcp \
+  --command /absolute/path/to/repository/.venv/bin/python \
+  --arg=-m \
+  --arg=demo_support_mcp.server \
+  --cwd /absolute/path/to/repository \
+  --audit-log /absolute/path/config/audit.jsonl
+```
+
+HTTP clients connect to `http://127.0.0.1:8000/mcp`. The process remains alive
+across independent client sessions until it receives a termination signal. It
+owns one long-lived upstream MCP subprocess and closes that subprocess during
+shutdown.
+
+The HTTP relay binds to loopback by default and enables MCP SDK DNS-rebinding
+protection. For another hostname, repeat `--allowed-host`; browser clients with
+an Origin header must also repeat `--allowed-origin`. This MVP does not provide
+HTTP authentication or TLS, so do not expose it directly to an untrusted
+network—place an authenticated TLS reverse proxy in front first.
 
 The command, arguments, and working directory must exactly match the descriptor
 used to create the signed fingerprint. Use `--arg=<value>` for arguments that
@@ -214,10 +246,14 @@ evidence, so protect the audit file as potentially sensitive data.
 
 - One relay loads one policy and fronts one upstream. Run separate relay
   instances for other approved servers.
+- Stdio mode follows the launching client's lifecycle. Streamable HTTP mode is
+  long-running and serves multiple MCP client sessions through `/mcp`.
+- The HTTP service does not automatically restart a failed upstream process;
+  restart the relay through a process supervisor if the upstream exits.
 - Update dependencies with `uv lock --upgrade` and commit the resulting
   `uv.lock`; use `uv sync --frozen` in reproducible automation.
 - Rotate policies before their required expiry. Removing a public key from the
   keyring also prevents policies signed by that key from starting.
 - There is no live revocation service in this MVP.
-- Streamable HTTP, environment-bearing descriptors, binary attestation,
-  resources, prompts, and policy merging are out of scope.
+- Environment-bearing descriptors, binary attestation, resources, prompts,
+  HTTP authentication, TLS termination, and policy merging are out of scope.

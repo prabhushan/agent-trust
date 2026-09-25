@@ -1,12 +1,14 @@
 [project]
 name = "agent-trust"
 version = "0.1.0"
-description = "Signed MCP server, tool, and argument authorization policies with a stdio enforcement relay"
+description = "Signed MCP authorization policies with a stdio and Streamable HTTP enforcement relay"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "cryptography>=44",
     "mcp>=1.21,<2",
+    "starlette>=0.46",
+    "uvicorn>=0.30",
 ]
 
 [project.scripts]

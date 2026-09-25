@@ -1,20 +1,25 @@
-"""A tools-only stdio MCP relay protected by a signed AgentTrust policy."""
+"""A tools-only stdio or Streamable HTTP relay protected by AgentTrust."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, asynccontextmanager
 import json
 from pathlib import Path
 import sys
-from typing import Any, Mapping, TextIO
+from typing import Any, AsyncIterator, Mapping, TextIO
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from mcp.server.transport_security import TransportSecuritySettings
 import mcp.types as types
+from starlette.applications import Starlette
+from starlette.routing import Route
+import uvicorn
 
 from ..core.gate import GateDecision, PolicyGate
 from ..core.policy import (
@@ -119,14 +124,15 @@ def create_relay_server(
     return server
 
 
-async def run_relay(
+@asynccontextmanager
+async def relay_runtime(
     *,
     policy: SignedMcpPolicy,
     trusted_keys: Mapping[str, Any],
     descriptor: StdioServerDescriptor,
     audit_log: str | None = None,
-) -> None:
-    """Validate, spawn one upstream, and serve the policy-filtered façade."""
+) -> AsyncIterator[Server]:
+    """Validate policy and own the audit writer and one upstream process."""
     gate = PolicyGate(policy, trusted_keys, descriptor)
     gate.validate_binding()  # Refuse startup before the upstream process exists.
     params = StdioServerParameters(
@@ -138,17 +144,112 @@ async def run_relay(
         async with stdio_client(params) as (upstream_read, upstream_write):
             async with ClientSession(upstream_read, upstream_write) as upstream:
                 await upstream.initialize()
-                relay = create_relay_server(gate, upstream, audit)
-                async with stdio_server() as (client_read, client_write):
-                    await relay.run(
-                        client_read,
-                        client_write,
-                        relay.create_initialization_options(),
-                    )
+                yield create_relay_server(gate, upstream, audit)
+
+
+async def run_stdio_relay(
+    *,
+    policy: SignedMcpPolicy,
+    trusted_keys: Mapping[str, Any],
+    descriptor: StdioServerDescriptor,
+    audit_log: str | None = None,
+) -> None:
+    """Serve one client over stdio for the lifetime of that client."""
+    async with relay_runtime(
+        policy=policy,
+        trusted_keys=trusted_keys,
+        descriptor=descriptor,
+        audit_log=audit_log,
+    ) as relay:
+        async with stdio_server() as (client_read, client_write):
+            await relay.run(
+                client_read,
+                client_write,
+                relay.create_initialization_options(),
+            )
+
+
+class _StreamableHttpEndpoint:
+    """Expose the SDK session manager as a Starlette ASGI route."""
+
+    def __init__(self, manager: StreamableHTTPSessionManager) -> None:
+        self._manager = manager
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        await self._manager.handle_request(scope, receive, send)
+
+
+def _default_allowed_hosts(host: str, port: int) -> list[str]:
+    hosts = {host, f"{host}:{port}"}
+    if host in {"127.0.0.1", "0.0.0.0", "::1"}:
+        hosts.update({"localhost", f"localhost:{port}", "127.0.0.1", f"127.0.0.1:{port}"})
+    return sorted(hosts)
+
+
+async def run_http_relay(
+    *,
+    policy: SignedMcpPolicy,
+    trusted_keys: Mapping[str, Any],
+    descriptor: StdioServerDescriptor,
+    host: str,
+    port: int,
+    http_path: str = "/mcp",
+    allowed_hosts: list[str] | None = None,
+    allowed_origins: list[str] | None = None,
+    audit_log: str | None = None,
+) -> None:
+    """Serve the relay continuously over MCP Streamable HTTP."""
+    if not http_path.startswith("/"):
+        raise PolicyError("--http-path must start with '/'")
+    if not 1 <= port <= 65535:
+        raise PolicyError("--port must be between 1 and 65535")
+
+    async with relay_runtime(
+        policy=policy,
+        trusted_keys=trusted_keys,
+        descriptor=descriptor,
+        audit_log=audit_log,
+    ) as relay:
+        security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=allowed_hosts or _default_allowed_hosts(host, port),
+            allowed_origins=allowed_origins or [],
+        )
+        manager = StreamableHTTPSessionManager(
+            app=relay,
+            stateless=False,
+            security_settings=security,
+        )
+        app = Starlette(
+            routes=[
+                Route(
+                    http_path,
+                    endpoint=_StreamableHttpEndpoint(manager),
+                    methods=["GET", "POST", "DELETE"],
+                )
+            ]
+        )
+        config = uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            log_level="info",
+            access_log=False,
+            lifespan="off",
+        )
+        http_server = uvicorn.Server(config)
+        async with manager.run():
+            await http_server.serve()
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the AgentTrust stdio MCP relay")
+    parser = argparse.ArgumentParser(description="Run the AgentTrust MCP relay")
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "streamable-http"),
+        default="stdio",
+        help="Client-facing MCP transport (default: stdio)",
+    )
     parser.add_argument("--policy", required=True, help="Signed policy JSON file")
     parser.add_argument("--keyring", required=True, help="Trusted Ed25519 public-key JSON file")
     parser.add_argument("--server-id", required=True, help="Approved server identifier")
@@ -156,6 +257,21 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--arg", action="append", default=[], help="Upstream argument; repeat as needed")
     parser.add_argument("--cwd", help="Absolute upstream working directory")
     parser.add_argument("--audit-log", help="Append decisions as JSONL instead of writing to stderr")
+    parser.add_argument("--host", default="127.0.0.1", help="HTTP bind host (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8000, help="HTTP bind port (default: 8000)")
+    parser.add_argument("--http-path", default="/mcp", help="Streamable HTTP endpoint (default: /mcp)")
+    parser.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        help="Allowed HTTP Host header; repeat for multiple values",
+    )
+    parser.add_argument(
+        "--allowed-origin",
+        action="append",
+        default=[],
+        help="Allowed browser Origin; repeat for multiple values",
+    )
     return parser
 
 
@@ -170,14 +286,25 @@ def main() -> None:
             args=tuple(args.arg),
             cwd=args.cwd,
         )
-        asyncio.run(
-            run_relay(
-                policy=policy,
-                trusted_keys=keyring,
-                descriptor=descriptor,
-                audit_log=args.audit_log,
+        common = {
+            "policy": policy,
+            "trusted_keys": keyring,
+            "descriptor": descriptor,
+            "audit_log": args.audit_log,
+        }
+        if args.transport == "stdio":
+            asyncio.run(run_stdio_relay(**common))
+        else:
+            asyncio.run(
+                run_http_relay(
+                    **common,
+                    host=args.host,
+                    port=args.port,
+                    http_path=args.http_path,
+                    allowed_hosts=args.allowed_host or None,
+                    allowed_origins=args.allowed_origin or None,
+                )
             )
-        )
     except (PolicyError, OSError) as exc:
         print(f"AgentTrust relay refused to start: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc

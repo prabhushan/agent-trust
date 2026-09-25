@@ -70,32 +70,39 @@ The top-level `agent_trust` package re-exports the supported policy and gate
 API, so application imports such as `from agent_trust import PolicyGate` remain
 stable.
 
-## Install and test
+## Required tools and runtimes
 
-From the repository root, let uv create and synchronize `.venv` from the
-committed lockfile:
+The local demo and Streamable HTTP quickstart require:
+
+- Python 3.11 or newer.
+- [uv](https://docs.astral.sh/uv/) for creating the virtual environment,
+  installing dependencies, and running the AgentTrust commands.
+- OpenSSL for generating the local development JWT secret.
+- A POSIX-compatible terminal such as `bash` or `zsh` for the documented shell
+  commands.
+- Local TCP port `8000` available for the Streamable HTTP relay.
+
+Confirm the tools are available:
 
 ```bash
-uv sync
-uv run python -m unittest discover -s tests -p 'test_*.py' -v
-uv run agent-trust-demo
+python3 --version
+uv --version
+openssl version
 ```
 
-The demo creates an ephemeral key and policy, starts the relay and synthetic
-support server, and shows:
-
-- `email.send` is not advertised and a direct call is blocked.
-- `ticket.get` for ticket `482` is blocked.
-- Ticket `481` and the approved summary destination are allowed.
-- Blocked attempts do not interfere with later valid calls.
-
-No email is delivered and all ticket data is synthetic.
+Run `uv sync` from the repository root to install the Python packages declared
+in `pyproject.toml`, including the MCP SDK, Cryptography, Starlette, Uvicorn,
+and HTTPX through the resolved dependency set. The included
+`demo_support_mcp` package provides the synthetic upstream MCP server. Docker,
+Node.js, and a separate database are not required.
 
 ## End-to-end Streamable HTTP quickstart
 
 This walkthrough generates a signed policy, creates a development JWT, starts
 the authenticated relay, and connects an MCP client. Run every command from the
-repository root:
+repository root.
+
+### 1. Install dependencies
 
 ```bash
 unset VIRTUAL_ENV
@@ -105,7 +112,7 @@ uv sync
 `unset VIRTUAL_ENV` avoids uv selecting an unrelated active virtual
 environment. It is unnecessary if no other environment is active.
 
-### 1. Generate the signed policy
+### 2. Generate the signed policy
 
 The policy embeds the approved upstream command, ordered arguments, working
 directory, tool rules, and subject rules. The relay will not accept runtime
@@ -125,7 +132,7 @@ This creates `config/policy.json`, `config/keyring.json`, and the private
 already exist and are still valid, reuse them. Use `--force` only when you
 intend to rotate and replace all three policy files.
 
-### 2. Create the JWT secret and mint a token
+### 3. Create the JWT secret and mint a token
 
 Create a local HS256 signing secret once:
 
@@ -150,7 +157,7 @@ uv run agent-trust-mint-jwt \
 Copy the token printed by this command. The issuer and audience must exactly
 match the relay options in the next step. Mint another token after it expires.
 
-### 3. Start the relay
+### 4. Start the relay
 
 Run the relay in its own terminal and leave it running:
 
@@ -173,7 +180,7 @@ The relay should report that Uvicorn is listening on
 CallToolRequest` confirm that requests reached the relay. Tool results are
 returned to the MCP client; they are not printed in the relay terminal.
 
-### 4. Connect an MCP client with the JWT
+### 5. Connect an MCP client with the JWT
 
 In a second terminal, place the token—not the signing secret—in an environment
 variable:
@@ -260,174 +267,33 @@ Local HS256 JWT mode is for development only. Anyone with
 `config/local-jwt-secret` can mint any principal or group. Production use
 requires TLS and validation against a trusted OIDC/JWKS identity provider.
 
-## Generating a persistent policy
+## Policy customization
 
-From the repository root, generate a policy for the included synthetic support
-server:
+The quickstart is the only policy-generation procedure in this README. To
+authorize a different MCP server, create an administrator-controlled tool-rule
+file using the `{"tools": [...]}` structure in
+`policy_specs/support_demo.json`, then adjust the quickstart generator's
+`--server-id`, `--command`, repeated `--arg`, and `--cwd` options.
 
-```bash
-uv run agent-trust-generate \
-  --output-dir config \
-  --tools policy_specs/support_demo.json \
-  --server-id support-mcp \
-  --arg=-m \
-  --arg=demo_support_mcp.server
-```
+Each tool entry contains `name`, `effect`, `subjects`, and
+`arguments_schema`. Keep the generated `signing-key.pem` with the policy
+administrator; the relay needs only `policy.json` and `keyring.json`.
 
-The command uses the uv environment's Python executable and the current
-directory as the approved server descriptor. It creates:
+## Relay behavior
 
-```text
-config/
-├── policy.json       # Signed authorization policy used by the relay
-├── keyring.json      # Public verification key used by the relay
-└── signing-key.pem   # Private signing key; keep secret and do not give to the relay
-```
-
-Existing files are not overwritten. Use `--force` only when intentionally
-rotating all three files. The generated private key has owner-only permissions
-and is ignored by this repository's `.gitignore`.
-
-The generator prints the exact `agent-trust-relay` command matching the signed
-descriptor. To define another policy, provide a JSON file with the same
-`{"tools": [...]}` structure as `policy_specs/support_demo.json`. Each entry
-contains `name`, `effect`, `subjects`, and `arguments_schema`. Supply that server's
-command, repeated `--arg` values, and working directory.
-
-### Programmatic generation
-
-Policy creation is a trusted administrative operation:
-
-```python
-from datetime import timedelta
-from pathlib import Path
-import sys
-
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from agent_trust import (
-    ServerRule,
-    StdioServerDescriptor,
-    SubjectSelector,
-    ToolRule,
-    encode_public_key,
-    fingerprint_server_descriptor,
-    sign_policy,
-)
-
-descriptor = StdioServerDescriptor(
-    server_id="support-mcp",
-    command=str(Path(sys.executable).absolute()),
-    args=("-m", "demo_support_mcp.server"),
-    cwd=str(Path.cwd().resolve()),
-)
-
-private_key = Ed25519PrivateKey.generate()
-policy = sign_policy(
-    private_key=private_key,
-    policy_id="support-policy-v1",
-    issuer="security-admin",
-    key_id="policy-key-2026-09",
-    approved_servers=[
-        ServerRule(
-            server_id="support-mcp",
-            descriptor=descriptor,
-            descriptor_sha256=fingerprint_server_descriptor(descriptor),
-            tools=(
-                ToolRule(
-                    "ticket.get",
-                    {
-                        "type": "object",
-                        "properties": {"ticket_id": {"const": "481"}},
-                        "required": ["ticket_id"],
-                        "additionalProperties": False,
-                    },
-                    SubjectSelector(groups=("support-agents",)),
-                ),
-            ),
-        )
-    ],
-    lifetime=timedelta(days=30),
-)
-
-Path("policy.json").write_text(policy.to_json())
-public_key = encode_public_key(private_key.public_key())
-Path("keyring.json").write_text(
-    '{"keys":{"policy-key-2026-09":"' + public_key + '"}}'
-)
-```
-
-Store and distribute the private key using a real key-management process in
-production. The example keeps it in memory only.
-
-## Running the relay
-
-The relay fronts exactly one stdio upstream. Stdio remains the default
-client-facing transport and is normally launched by an MCP client:
-
-```bash
-uv run agent-trust-relay \
-  --transport stdio \
-  --policy /absolute/path/policy.json \
-  --keyring /absolute/path/keyring.json \
-  --principal-id local-agent \
-  --principal-group support-managers \
-  --audit-log /absolute/path/agent-trust-audit.jsonl
-```
-
-To run the same `agent-trust-relay` command as an always-on Streamable HTTP
-service:
-
-```bash
-uv run agent-trust-relay \
-  --transport streamable-http \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --policy /absolute/path/policy.json \
-  --keyring /absolute/path/keyring.json \
-  --principal-id local-agent \
-  --principal-group support-managers \
-  --audit-log /absolute/path/config/audit.jsonl
-```
-
-HTTP clients connect to `http://127.0.0.1:8000/mcp`. The process remains alive
-across independent client sessions until it receives a termination signal. It
-owns one long-lived upstream MCP subprocess and closes that subprocess during
+The quickstart is the only Streamable HTTP startup procedure in this README.
+The HTTP process remains alive across independent client sessions, owns one
+long-lived upstream MCP subprocess, and closes that subprocess during
 shutdown.
 
-By default, the relay binds one trusted static principal and zero or more groups
-at startup. This is appropriate for stdio and isolated service identities. In
-Streamable HTTP static mode every client shares that identity. Local JWT mode,
-described below, supplies a verified identity per request. Never accept identity
-headers directly from a client.
+Stdio is also supported for clients that launch the relay as a child process.
+Use `--transport stdio` with trusted static `--principal-id` and repeatable
+`--principal-group` values. JWT authentication applies only to Streamable HTTP.
+In JWT mode, the verified token supplies the principal and groups; never trust
+identity headers or tool arguments as caller identity.
 
-### Local JWT development mode
-
-For local integration tests, Streamable HTTP can instead require a short-lived
-HS256 JWT on every request. Create a random secret of at least 32 bytes and keep
-it outside source control. Start the relay with `--jwt-secret-file`,
-`--jwt-issuer`, and `--jwt-audience`. In this mode the static principal options
-are ignored and the relay obtains the principal name and groups from the
-verified token.
-
-Mint a short-lived development token with:
-
-```bash
-uv run agent-trust-mint-jwt \
-  --secret-file /secure/path/local-jwt-secret \
-  --issuer agenttrust-local \
-  --audience http://127.0.0.1:8000/mcp \
-  --name alice \
-  --group support-managers
-```
-
-The MCP HTTP client sends the resulting value as an `Authorization: Bearer`
-header. Missing, malformed, expired, incorrectly signed, wrong-issuer, and
+Missing, malformed, expired, incorrectly signed, wrong-issuer, and
 wrong-audience tokens receive HTTP 401 before MCP request processing.
-
-This is not production identity. Anyone holding the shared signing secret can
-mint arbitrary names and groups, so the secret belongs only to the trusted
-local token issuer—not to an untrusted MCP client. Production deployments still
-require OIDC/JWKS validation in phase 4.
 
 The HTTP relay binds to loopback by default and enables MCP SDK DNS-rebinding
 protection. For another hostname, repeat `--allowed-host`; browser clients with

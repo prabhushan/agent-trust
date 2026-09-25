@@ -1,0 +1,39 @@
+{
+  "tools": [
+    {
+      "name": "ticket.get",
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "const": "481"
+          }
+        },
+        "required": [
+          "ticket_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "summary.save_draft",
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "destination": {
+            "const": "support-manager-drafts"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "destination",
+          "summary"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}
+

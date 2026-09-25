@@ -1,0 +1,23 @@
+[project]
+name = "agent-trust"
+version = "0.1.0"
+description = "Signed MCP server, tool, and argument authorization policies with a stdio enforcement relay"
+readme = "agent_trust/README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "cryptography>=44",
+    "mcp>=1.21,<2",
+]
+
+[project.scripts]
+agent-trust-demo = "agent_trust.examples.demo:main"
+agent-trust-generate = "agent_trust.cli.generate:main"
+agent-trust-relay = "agent_trust.mcp.relay:main"
+agent-trust-support-server = "agent_trust.mcp.support_server:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agent_trust*"]

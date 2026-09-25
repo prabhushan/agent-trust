@@ -1,4 +1,4 @@
-"""Synthetic local MCP server used solely by the AgentTrust demonstration."""
+"""Synthetic upstream MCP server used solely by the AgentTrust demonstration."""
 
 from __future__ import annotations
 

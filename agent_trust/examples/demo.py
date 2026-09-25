@@ -57,7 +57,7 @@ async def run_demo() -> None:
     upstream = StdioServerDescriptor(
         server_id="support-mcp",
         command=python,
-        args=("-m", "agent_trust.mcp.support_server"),
+        args=("-m", "demo_support_mcp.server"),
         cwd=str(project_root),
     )
     private_key = Ed25519PrivateKey.generate()
@@ -93,7 +93,7 @@ async def run_demo() -> None:
             "--server-id", upstream.server_id,
             "--command", upstream.command,
             "--arg=-m",
-            "--arg=agent_trust.mcp.support_server",
+            "--arg=demo_support_mcp.server",
             "--cwd", upstream.cwd or str(project_root),
             "--audit-log", str(audit_path),
         ]

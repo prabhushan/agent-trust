@@ -13,11 +13,11 @@ dependencies = [
 agent-trust-demo = "agent_trust.examples.demo:main"
 agent-trust-generate = "agent_trust.cli.generate:main"
 agent-trust-relay = "agent_trust.mcp.relay:main"
-agent-trust-support-server = "agent_trust.mcp.support_server:main"
+demo-support-mcp = "demo_support_mcp.server:main"
 
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["agent_trust*"]
+include = ["agent_trust*", "demo_support_mcp*"]

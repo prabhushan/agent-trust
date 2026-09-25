@@ -217,3 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 AGENTTRUST_HACKATHON_SUMMARY.md
+
+# AgentTrust generated policy material
+config/policy.json
+config/keyring.json
+config/signing-key.pem
+config/audit.jsonl

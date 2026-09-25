@@ -50,8 +50,11 @@ tool.
 agent_trust/
 ├── core/       # Signed policy model, verification, and authorization gate
 ├── cli/        # Persistent policy and Ed25519 key generator
-├── mcp/        # Stdio relay and synthetic support MCP server
+├── mcp/        # Production stdio enforcement relay
 └── examples/   # Runnable end-to-end demonstration
+demo_support_mcp/ # Separate synthetic third-party-style upstream MCP server
+policy_specs/      # Administrator-controlled unsigned policy inputs
+config/            # Generated signed policy, keyring, and local audit output
 tests/          # Unit and stdio integration tests
 ```
 
@@ -88,10 +91,10 @@ server:
 ```bash
 uv run agent-trust-generate \
   --output-dir config \
-  --tools agent_trust/examples/support-tools.json \
+  --tools policy_specs/support_demo.json \
   --server-id support-mcp \
   --arg=-m \
-  --arg=agent_trust.mcp.support_server
+  --arg=demo_support_mcp.server
 ```
 
 The command uses the uv environment's Python executable and the current
@@ -110,7 +113,7 @@ and is ignored by this repository's `.gitignore`.
 
 The generator prints the exact `agent-trust-relay` command matching the signed
 descriptor. To define another policy, provide a JSON file with the same
-`{"tools": [...]}` structure as `support-tools.json` and supply that server's
+`{"tools": [...]}` structure as `policy_specs/support_demo.json` and supply that server's
 command, repeated `--arg` values, and working directory.
 
 ### Programmatic generation
@@ -135,7 +138,7 @@ from agent_trust import (
 descriptor = StdioServerDescriptor(
     server_id="support-mcp",
     command=str(Path(sys.executable).absolute()),
-    args=("-m", "agent_trust.mcp.support_server"),
+    args=("-m", "demo_support_mcp.server"),
     cwd=str(Path.cwd().resolve()),
 )
 
@@ -186,7 +189,7 @@ uv run agent-trust-relay \
   --server-id support-mcp \
   --command /absolute/path/to/repository/.venv/bin/python \
   --arg=-m \
-  --arg=agent_trust.mcp.support_server \
+  --arg=demo_support_mcp.server \
   --cwd /absolute/path/to/repository \
   --audit-log /absolute/path/agent-trust-audit.jsonl
 ```

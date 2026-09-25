@@ -7,7 +7,6 @@ from datetime import timedelta
 import json
 import os
 from pathlib import Path
-import shlex
 import sys
 from typing import Any
 
@@ -121,16 +120,6 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _relay_command(paths: dict[str, Path]) -> str:
-    command = [
-        "uv", "run", "agent-trust-relay",
-        "--policy", str(paths["policy"]),
-        "--keyring", str(paths["keyring"]),
-    ]
-    command.extend(["--audit-log", str(paths["policy"].parent / "audit.jsonl")])
-    return shlex.join(command)
-
-
 def main() -> None:
     args = _parser().parse_args()
     try:
@@ -161,8 +150,6 @@ def main() -> None:
     print(f"Created keyring:    {paths['keyring']}")
     print(f"Created private key:{paths['private_key']}")
     print("\nKeep signing-key.pem private; the relay needs only policy.json and keyring.json.")
-    print("\nRun the relay with:\n")
-    print(_relay_command(paths))
 
 
 if __name__ == "__main__":

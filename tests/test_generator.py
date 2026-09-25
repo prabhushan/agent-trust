@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 
-from agent_trust import PolicyGate, PolicyError, SignedMcpPolicy, StdioServerDescriptor
+from agent_trust import PolicyGate, PolicyError, Principal, SignedMcpPolicy, StdioServerDescriptor
 from agent_trust.cli.generate import generate_policy_files, load_tool_rules
 from agent_trust.mcp.relay import load_keyring
 
@@ -39,7 +39,7 @@ class PolicyGeneratorTests(unittest.TestCase):
             keyring = load_keyring(paths["keyring"])
             gate = PolicyGate(policy, keyring, descriptor)
             gate.validate_binding()
-            self.assertTrue(gate.check("ticket.get", {"ticket_id": "481"}).allowed)
+            self.assertTrue(gate.check("ticket.get", {"ticket_id": "481"}, Principal("local-agent")).allowed)
             self.assertEqual(os.stat(paths["private_key"]).st_mode & 0o777, 0o600)
             self.assertEqual(set(json.loads(paths["keyring"].read_text())["keys"]), {"generated-key"})
 

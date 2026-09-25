@@ -11,11 +11,12 @@ independent relay processes until it expires.
 
 ## Security boundary
 
-AgentTrust answers three questions:
+AgentTrust answers four questions:
 
 1. Is this configured MCP server approved?
-2. Is this tool approved for that server?
-3. Do the proposed arguments satisfy the approved constraints?
+2. Which trusted principal and groups are making the call?
+3. Is this tool allowed or explicitly denied for that subject?
+4. Do the proposed arguments satisfy an applicable allow rule?
 
 It does **not** prove that an otherwise allowed call belongs to the user's
 current goal. For example, a broad policy permitting any ticket ID cannot stop
@@ -33,13 +34,19 @@ A signed policy contains:
 
 - Policy identity, issuer, audience, signing key ID, and required expiry
 - One or more server IDs and SHA-256 descriptor fingerprints
-- An allowlist of tools for each server
-- A small JSON-Schema-style argument policy for each tool
+- Subject-aware `allow` and `deny` tool rules for each server
+- Principal IDs and groups on every rule (either match uses OR semantics)
+- A small JSON-Schema-style argument policy for every rule
 - An Ed25519 signature over canonical JSON
 
 The argument validator supports `const`, `enum`, `type`, object properties,
 required fields, `additionalProperties`, string patterns, numeric bounds,
 arrays, and `maxItems`.
+
+Policies fail closed. A matching `deny` rule takes precedence over every
+matching `allow`; without a matching allow, the tool is unauthorized. Multiple
+matching allow rules are useful for roles with different argument scopes: a
+call is accepted when its arguments satisfy at least one of them.
 
 Relays receive only trusted Ed25519 public keys. The private signing key belongs
 in a separate administrative path and must never be exposed to an agent or MCP
@@ -114,7 +121,8 @@ and is ignored by this repository's `.gitignore`.
 
 The generator prints the exact `agent-trust-relay` command matching the signed
 descriptor. To define another policy, provide a JSON file with the same
-`{"tools": [...]}` structure as `policy_specs/support_demo.json` and supply that server's
+`{"tools": [...]}` structure as `policy_specs/support_demo.json`. Each entry
+contains `name`, `effect`, `subjects`, and `arguments_schema`. Supply that server's
 command, repeated `--arg` values, and working directory.
 
 ### Programmatic generation
@@ -130,6 +138,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from agent_trust import (
     ServerRule,
     StdioServerDescriptor,
+    SubjectSelector,
     ToolRule,
     encode_public_key,
     fingerprint_server_descriptor,
@@ -162,6 +171,7 @@ policy = sign_policy(
                         "required": ["ticket_id"],
                         "additionalProperties": False,
                     },
+                    SubjectSelector(groups=("support-agents",)),
                 ),
             ),
         )
@@ -190,6 +200,8 @@ uv run agent-trust-relay \
   --policy /absolute/path/policy.json \
   --keyring /absolute/path/keyring.json \
   --server-id support-mcp \
+  --principal-id local-agent \
+  --principal-group support-managers \
   --command /absolute/path/to/repository/.venv/bin/python \
   --arg=-m \
   --arg=demo_support_mcp.server \
@@ -208,6 +220,8 @@ uv run agent-trust-relay \
   --policy /absolute/path/policy.json \
   --keyring /absolute/path/keyring.json \
   --server-id support-mcp \
+  --principal-id local-agent \
+  --principal-group support-managers \
   --command /absolute/path/to/repository/.venv/bin/python \
   --arg=-m \
   --arg=demo_support_mcp.server \
@@ -219,6 +233,41 @@ HTTP clients connect to `http://127.0.0.1:8000/mcp`. The process remains alive
 across independent client sessions until it receives a termination signal. It
 owns one long-lived upstream MCP subprocess and closes that subprocess during
 shutdown.
+
+By default, the relay binds one trusted static principal and zero or more groups
+at startup. This is appropriate for stdio and isolated service identities. In
+Streamable HTTP static mode every client shares that identity. Local JWT mode,
+described below, supplies a verified identity per request. Never accept identity
+headers directly from a client.
+
+### Local JWT development mode
+
+For local integration tests, Streamable HTTP can instead require a short-lived
+HS256 JWT on every request. Create a random secret of at least 32 bytes and keep
+it outside source control. Start the relay with `--jwt-secret-file`,
+`--jwt-issuer`, and `--jwt-audience`. In this mode the static principal options
+are ignored and the relay obtains the principal name and groups from the
+verified token.
+
+Mint a short-lived development token with:
+
+```bash
+uv run agent-trust-mint-jwt \
+  --secret-file /secure/path/local-jwt-secret \
+  --issuer agenttrust-local \
+  --audience http://127.0.0.1:8000/mcp \
+  --name alice \
+  --group support-managers
+```
+
+The MCP HTTP client sends the resulting value as an `Authorization: Bearer`
+header. Missing, malformed, expired, incorrectly signed, wrong-issuer, and
+wrong-audience tokens receive HTTP 401 before MCP request processing.
+
+This is not production identity. Anyone holding the shared signing secret can
+mint arbitrary names and groups, so the secret belongs only to the trusted
+local token issuer—not to an untrusted MCP client. Production deployments still
+require OIDC/JWKS validation in phase 4.
 
 The HTTP relay binds to loopback by default and enables MCP SDK DNS-rebinding
 protection. For another hostname, repeat `--allowed-host`; browser clients with
@@ -233,7 +282,7 @@ begin with a hyphen.
 At startup the relay verifies the signature, key ID, audience, timestamps,
 server ID, and descriptor fingerprint before spawning the upstream. It then:
 
-- Filters `tools/list` to approved tools and publishes the policy argument schemas.
+- Filters `tools/list` using the bound principal, group rules, and deny precedence.
 - Checks every `tools/call` again, including policy expiry.
 - Returns an `isError=true` tool result for denied calls without forwarding them.
 - Passes allowed upstream results through unchanged.
@@ -256,4 +305,17 @@ evidence, so protect the audit file as potentially sensitive data.
   keyring also prevents policies signed by that key from starting.
 - There is no live revocation service in this MVP.
 - Environment-bearing descriptors, binary attestation, resources, prompts,
-  HTTP authentication, TLS termination, and policy merging are out of scope.
+  and policy merging are out of scope.
+
+## Gateway roadmap placeholders
+
+The replacement-gateway controls intentionally left unimplemented are recorded
+in `agent_trust/gateway/placeholders.py` and fail loudly if invoked:
+
+4. Production OIDC/JWKS authentication. A local HS256 JWT development mode is
+   available, but it is not a substitute for an identity provider.
+5. Per-principal/tool rate limiting and atomic signed-policy hot reload.
+6. TLS termination, either in-process or through a trusted load balancer.
+
+Until those phases exist, the HTTP relay is not a complete Kong replacement and
+must remain on a trusted network boundary.

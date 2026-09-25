@@ -17,6 +17,7 @@ from ..core.policy import (
     ServerRule,
     StdioServerDescriptor,
     ToolRule,
+    SubjectSelector,
     encode_public_key,
     fingerprint_server_descriptor,
     sign_policy,
@@ -24,6 +25,7 @@ from ..core.policy import (
 
 
 def _tool_rules() -> tuple[ToolRule, ...]:
+    subjects = SubjectSelector(principals=("local-agent",), groups=("support-managers",))
     return (
         ToolRule(
             "ticket.get",
@@ -33,6 +35,7 @@ def _tool_rules() -> tuple[ToolRule, ...]:
                 "required": ["ticket_id"],
                 "additionalProperties": False,
             },
+            subjects,
         ),
         ToolRule(
             "summary.save_draft",
@@ -45,6 +48,7 @@ def _tool_rules() -> tuple[ToolRule, ...]:
                 "required": ["destination", "summary"],
                 "additionalProperties": False,
             },
+            subjects,
         ),
     )
 

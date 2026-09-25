@@ -1,7 +1,12 @@
 {
   "tools": [
     {
+      "effect": "allow",
       "name": "ticket.get",
+      "subjects": {
+        "groups": ["support-agents", "support-managers"],
+        "principals": ["local-agent"]
+      },
       "arguments_schema": {
         "type": "object",
         "properties": {
@@ -16,7 +21,12 @@
       }
     },
     {
+      "effect": "allow",
       "name": "summary.save_draft",
+      "subjects": {
+        "groups": ["support-managers"],
+        "principals": ["local-agent"]
+      },
       "arguments_schema": {
         "type": "object",
         "properties": {
@@ -33,6 +43,15 @@
         ],
         "additionalProperties": false
       }
+    },
+    {
+      "effect": "deny",
+      "name": "summary.save_draft",
+      "subjects": {
+        "groups": ["support-agents"],
+        "principals": []
+      },
+      "arguments_schema": {}
     }
   ]
 }

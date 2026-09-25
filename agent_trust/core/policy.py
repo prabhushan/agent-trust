@@ -17,7 +17,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 
-POLICY_VERSION = 1
+POLICY_VERSION = 2
 POLICY_AUDIENCE = "agent-trust-relay"
 SIGNATURE_ALGORITHM = "Ed25519"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -160,26 +160,75 @@ def fingerprint_server_descriptor(descriptor: StdioServerDescriptor) -> str:
 
 
 @dataclass(frozen=True)
+class SubjectSelector:
+    """Principals or groups to which a tool rule applies (OR semantics)."""
+
+    principals: tuple[str, ...] = ()
+    groups: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        principals = tuple(self.principals)
+        groups = tuple(self.groups)
+        if not principals and not groups:
+            raise PolicyError("Tool rule subjects must contain at least one principal or group")
+        for label, values in (("principals", principals), ("groups", groups)):
+            if not all(isinstance(value, str) and value.strip() for value in values):
+                raise PolicyError(f"Subject {label} must contain non-empty strings")
+            if len(set(values)) != len(values):
+                raise PolicyError(f"Subject {label} must be unique")
+        object.__setattr__(self, "principals", principals)
+        object.__setattr__(self, "groups", groups)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"principals": list(self.principals), "groups": list(self.groups)}
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "SubjectSelector":
+        if not isinstance(value, Mapping):
+            raise PolicyError("Malformed tool rule subjects")
+        _require_exact_keys(value, {"principals", "groups"}, "tool rule subjects")
+        if not isinstance(value["principals"], list) or not isinstance(value["groups"], list):
+            raise PolicyError("Subject principals and groups must be lists")
+        return cls(principals=tuple(value["principals"]), groups=tuple(value["groups"]))
+
+
+@dataclass(frozen=True)
 class ToolRule:
     name: str
     arguments_schema: Mapping[str, Any]
+    subjects: SubjectSelector
+    effect: str = "allow"
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
             raise PolicyError("Tool names must be non-empty")
         if not isinstance(self.arguments_schema, Mapping):
             raise PolicyError("Tool arguments_schema must be an object")
+        if self.effect not in {"allow", "deny"}:
+            raise PolicyError("Tool rule effect must be 'allow' or 'deny'")
+        if not isinstance(self.subjects, SubjectSelector):
+            raise PolicyError("Tool rule subjects must be a SubjectSelector")
         object.__setattr__(self, "arguments_schema", _freeze_json(dict(self.arguments_schema)))
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "arguments_schema": thaw_json(self.arguments_schema)}
+        return {
+            "name": self.name,
+            "effect": self.effect,
+            "subjects": self.subjects.to_dict(),
+            "arguments_schema": thaw_json(self.arguments_schema),
+        }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ToolRule":
         if not isinstance(value, Mapping):
             raise PolicyError("Malformed tool rule")
-        _require_exact_keys(value, {"name", "arguments_schema"}, "tool rule")
-        return cls(name=value["name"], arguments_schema=value["arguments_schema"])
+        _require_exact_keys(value, {"name", "effect", "subjects", "arguments_schema"}, "tool rule")
+        return cls(
+            name=value["name"],
+            effect=value["effect"],
+            subjects=SubjectSelector.from_dict(value["subjects"]),
+            arguments_schema=value["arguments_schema"],
+        )
 
 
 @dataclass(frozen=True)
@@ -198,8 +247,9 @@ class ServerRule:
         tools = tuple(self.tools)
         if not all(isinstance(tool, ToolRule) for tool in tools):
             raise PolicyError("Server tools must be ToolRule values")
-        if len({tool.name for tool in tools}) != len(tools):
-            raise PolicyError(f"Tool names must be unique within server {self.server_id!r}")
+        serialized = [_canonical_json(tool.to_dict()) for tool in tools]
+        if len(set(serialized)) != len(serialized):
+            raise PolicyError(f"Tool rules must be unique within server {self.server_id!r}")
         object.__setattr__(self, "tools", tools)
 
     def to_dict(self) -> dict[str, Any]:

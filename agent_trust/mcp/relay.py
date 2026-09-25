@@ -13,22 +13,28 @@ from typing import Any, AsyncIterator, Mapping, TextIO
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.server.lowlevel import Server
+from mcp.server.auth.middleware.bearer_auth import (
+    AuthenticatedUser,
+    BearerAuthBackend,
+    RequireAuthMiddleware,
+)
 from mcp.server.stdio import stdio_server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 import mcp.types as types
 from starlette.applications import Starlette
+from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.routing import Route
 import uvicorn
 
-from ..core.gate import GateDecision, PolicyGate
+from ..core.gate import GateDecision, PolicyGate, Principal
 from ..core.policy import (
     PolicyError,
     SignedMcpPolicy,
     StdioServerDescriptor,
     decode_public_key,
-    thaw_json,
 )
+from ..gateway.local_jwt import LocalJwtVerifier
 
 
 class AuditWriter(AbstractContextManager["AuditWriter"]):
@@ -86,27 +92,38 @@ def create_relay_server(
     gate: PolicyGate,
     upstream: ClientSession,
     audit: AuditWriter,
+    principal: Principal | None,
 ) -> Server:
     """Create the client-facing MCP server for an initialized upstream."""
     server = Server("agent-trust-relay", version="1.0.0")
 
+    def current_principal() -> Principal:
+        if principal is not None:
+            return principal
+        request = server.request_context.request
+        user = getattr(request, "user", None)
+        if not isinstance(user, AuthenticatedUser):
+            raise PolicyError("HTTP request has no authenticated principal")
+        claims = user.access_token.claims or {}
+        groups = claims.get("groups", [])
+        return Principal(user.access_token.subject or claims["name"], tuple(groups))
+
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
-        server_rule = gate.validate_binding()
-        rules = {rule.name: rule for rule in server_rule.tools}
+        gate.validate_binding()
         advertised: list[types.Tool] = []
         for upstream_tool in await _all_upstream_tools(upstream):
-            rule = rules.get(upstream_tool.name)
-            if rule is None:
+            schema = gate.tool_schema(upstream_tool.name, current_principal())
+            if schema is None:
                 continue
             advertised.append(
-                upstream_tool.model_copy(update={"inputSchema": thaw_json(rule.arguments_schema)})
+                upstream_tool.model_copy(update={"inputSchema": schema})
             )
         return advertised
 
     @server.call_tool(validate_input=False)
     async def call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
-        decision = gate.check(name, arguments)
+        decision = gate.check(name, arguments, current_principal())
         audit.emit(decision)
         if not decision.allowed:
             body = {
@@ -130,6 +147,7 @@ async def relay_runtime(
     policy: SignedMcpPolicy,
     trusted_keys: Mapping[str, Any],
     descriptor: StdioServerDescriptor,
+    principal: Principal | None,
     audit_log: str | None = None,
 ) -> AsyncIterator[Server]:
     """Validate policy and own the audit writer and one upstream process."""
@@ -144,7 +162,7 @@ async def relay_runtime(
         async with stdio_client(params) as (upstream_read, upstream_write):
             async with ClientSession(upstream_read, upstream_write) as upstream:
                 await upstream.initialize()
-                yield create_relay_server(gate, upstream, audit)
+                yield create_relay_server(gate, upstream, audit, principal)
 
 
 async def run_stdio_relay(
@@ -152,13 +170,17 @@ async def run_stdio_relay(
     policy: SignedMcpPolicy,
     trusted_keys: Mapping[str, Any],
     descriptor: StdioServerDescriptor,
+    principal: Principal,
     audit_log: str | None = None,
 ) -> None:
     """Serve one client over stdio for the lifetime of that client."""
+    if principal is None:
+        raise PolicyError("stdio transport requires a static principal")
     async with relay_runtime(
         policy=policy,
         trusted_keys=trusted_keys,
         descriptor=descriptor,
+        principal=principal,
         audit_log=audit_log,
     ) as relay:
         async with stdio_server() as (client_read, client_write):
@@ -191,23 +213,28 @@ async def run_http_relay(
     policy: SignedMcpPolicy,
     trusted_keys: Mapping[str, Any],
     descriptor: StdioServerDescriptor,
+    principal: Principal | None,
     host: str,
     port: int,
     http_path: str = "/mcp",
     allowed_hosts: list[str] | None = None,
     allowed_origins: list[str] | None = None,
     audit_log: str | None = None,
+    jwt_verifier: LocalJwtVerifier | None = None,
 ) -> None:
     """Serve the relay continuously over MCP Streamable HTTP."""
     if not http_path.startswith("/"):
         raise PolicyError("--http-path must start with '/'")
     if not 1 <= port <= 65535:
         raise PolicyError("--port must be between 1 and 65535")
+    if (principal is None) == (jwt_verifier is None):
+        raise PolicyError("HTTP relay requires exactly one static principal or JWT verifier")
 
     async with relay_runtime(
         policy=policy,
         trusted_keys=trusted_keys,
         descriptor=descriptor,
+        principal=principal,
         audit_log=audit_log,
     ) as relay:
         security = TransportSecuritySettings(
@@ -220,7 +247,7 @@ async def run_http_relay(
             stateless=False,
             security_settings=security,
         )
-        app = Starlette(
+        app: Any = Starlette(
             routes=[
                 Route(
                     http_path,
@@ -229,6 +256,11 @@ async def run_http_relay(
                 )
             ]
         )
+        if jwt_verifier is not None:
+            app = AuthenticationMiddleware(
+                RequireAuthMiddleware(app, required_scopes=[]),
+                backend=BearerAuthBackend(jwt_verifier),
+            )
         config = uvicorn.Config(
             app,
             host=host,
@@ -250,6 +282,19 @@ def _parser() -> argparse.ArgumentParser:
         default="stdio",
         help="Client-facing MCP transport (default: stdio)",
     )
+    parser.add_argument(
+        "--jwt-secret-file",
+        help="Enable local development JWT authentication using an HS256 secret file",
+    )
+    parser.add_argument(
+        "--jwt-issuer",
+        default="agenttrust-local",
+        help="Required issuer for local JWT authentication (default: agenttrust-local)",
+    )
+    parser.add_argument(
+        "--jwt-audience",
+        help="Required audience for local JWT authentication, normally the canonical MCP URL",
+    )
     parser.add_argument("--policy", required=True, help="Signed policy JSON file")
     parser.add_argument("--keyring", required=True, help="Trusted Ed25519 public-key JSON file")
     parser.add_argument("--server-id", required=True, help="Approved server identifier")
@@ -257,6 +302,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--arg", action="append", default=[], help="Upstream argument; repeat as needed")
     parser.add_argument("--cwd", help="Absolute upstream working directory")
     parser.add_argument("--audit-log", help="Append decisions as JSONL instead of writing to stderr")
+    parser.add_argument(
+        "--principal-id",
+        default="local-agent",
+        help="Trusted static caller identity (ignored when local JWT authentication is enabled)",
+    )
+    parser.add_argument(
+        "--principal-group",
+        action="append",
+        default=[],
+        help="Trusted static caller group; repeat for multiple groups",
+    )
     parser.add_argument("--host", default="127.0.0.1", help="HTTP bind host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="HTTP bind port (default: 8000)")
     parser.add_argument("--http-path", default="/mcp", help="Streamable HTTP endpoint (default: /mcp)")
@@ -286,10 +342,23 @@ def main() -> None:
             args=tuple(args.arg),
             cwd=args.cwd,
         )
+        jwt_verifier = None
+        if args.jwt_secret_file:
+            if args.transport != "streamable-http":
+                raise PolicyError("--jwt-secret-file is supported only with streamable-http")
+            if not args.jwt_audience:
+                raise PolicyError("--jwt-audience is required with --jwt-secret-file")
+            try:
+                jwt_secret = Path(args.jwt_secret_file).read_bytes().strip()
+            except OSError as exc:
+                raise PolicyError(f"Unable to read local JWT secret: {exc}") from exc
+            jwt_verifier = LocalJwtVerifier(jwt_secret, issuer=args.jwt_issuer, audience=args.jwt_audience)
+        principal = None if jwt_verifier is not None else Principal(args.principal_id, tuple(args.principal_group))
         common = {
             "policy": policy,
             "trusted_keys": keyring,
             "descriptor": descriptor,
+            "principal": principal,
             "audit_log": args.audit_log,
         }
         if args.transport == "stdio":
@@ -303,6 +372,7 @@ def main() -> None:
                     http_path=args.http_path,
                     allowed_hosts=args.allowed_host or None,
                     allowed_origins=args.allowed_origin or None,
+                    jwt_verifier=jwt_verifier,
                 )
             )
     except (PolicyError, OSError) as exc:

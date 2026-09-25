@@ -14,6 +14,7 @@ dependencies = [
 [project.scripts]
 agent-trust-demo = "agent_trust.examples.demo:main"
 agent-trust-generate = "agent_trust.cli.generate:main"
+agent-trust-mint-jwt = "agent_trust.cli.mint_jwt:main"
 agent-trust-relay = "agent_trust.mcp.relay:main"
 demo-support-mcp = "demo_support_mcp.server:main"
 

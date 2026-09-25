@@ -14,6 +14,7 @@ from agent_trust.core.policy import (
     ServerRule,
     SignedMcpPolicy,
     StdioServerDescriptor,
+    SubjectSelector,
     ToolRule,
     decode_public_key,
     encode_public_key,
@@ -24,6 +25,7 @@ from agent_trust.core.policy import (
 
 
 NOW = datetime(2026, 9, 24, 12, tzinfo=UTC)
+SUBJECTS = SubjectSelector(principals=("agent-1",), groups=("support-agents",))
 
 
 def descriptor(server_id: str = "support-mcp", args: tuple[str, ...] = ()) -> StdioServerDescriptor:
@@ -49,6 +51,7 @@ def rule(server: StdioServerDescriptor | None = None, tool_name: str = "ticket.g
                     "required": ["ticket_id"],
                     "additionalProperties": False,
                 },
+                SUBJECTS,
             ),
         ),
     )
@@ -83,8 +86,8 @@ class SignedPolicyTests(unittest.TestCase):
         self.assertEqual(parsed.to_dict(), policy.to_dict())
 
     def test_canonical_signing_ignores_schema_key_order(self) -> None:
-        first = ToolRule("x", {"type": "object", "required": [], "properties": {}})
-        second = ToolRule("x", {"properties": {}, "required": [], "type": "object"})
+        first = ToolRule("x", {"type": "object", "required": [], "properties": {}}, SUBJECTS)
+        second = ToolRule("x", {"properties": {}, "required": [], "type": "object"}, SUBJECTS)
         server = descriptor()
         first_policy = signed_policy(
             self.private_key,
@@ -124,7 +127,7 @@ class SignedPolicyTests(unittest.TestCase):
         digest = fingerprint_server_descriptor(server)
         with self.assertRaisesRegex(PolicyError, "at least one tool"):
             ServerRule(server.server_id, digest, ())
-        duplicate_tool = ToolRule("ticket.get", {"type": "object"})
+        duplicate_tool = ToolRule("ticket.get", {"type": "object"}, SUBJECTS)
         with self.assertRaisesRegex(PolicyError, "unique"):
             ServerRule(server.server_id, digest, (duplicate_tool, duplicate_tool))
         duplicate_server = rule(server)
@@ -146,9 +149,15 @@ class SignedPolicyTests(unittest.TestCase):
 
     def test_rejects_non_json_schema_values(self) -> None:
         with self.assertRaisesRegex(PolicyError, "keys.*strings"):
-            ToolRule("x", {1: "not a JSON object key"})
+            ToolRule("x", {1: "not a JSON object key"}, SUBJECTS)
         with self.assertRaisesRegex(PolicyError, "NaN"):
-            ToolRule("x", {"const": float("nan")})
+            ToolRule("x", {"const": float("nan")}, SUBJECTS)
+
+    def test_rejects_empty_subjects_and_invalid_effect(self) -> None:
+        with self.assertRaisesRegex(PolicyError, "at least one"):
+            SubjectSelector()
+        with self.assertRaisesRegex(PolicyError, "effect"):
+            ToolRule("x", {"type": "object"}, SUBJECTS, effect="audit")
 
     def test_descriptor_fingerprint_is_deterministic_and_sensitive(self) -> None:
         first = descriptor(args=("-m", "one"))

@@ -23,12 +23,32 @@ from .policy import (
 
 
 @dataclass(frozen=True)
+class Principal:
+    """Trusted caller identity supplied by the relay's authentication boundary."""
+
+    principal_id: str
+    groups: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.principal_id, str) or not self.principal_id.strip():
+            raise PolicyError("principal_id must be non-empty")
+        groups = tuple(self.groups)
+        if not all(isinstance(group, str) and group.strip() for group in groups):
+            raise PolicyError("Principal groups must contain non-empty strings")
+        if len(set(groups)) != len(groups):
+            raise PolicyError("Principal groups must be unique")
+        object.__setattr__(self, "groups", groups)
+
+
+@dataclass(frozen=True)
 class GateDecision:
     allowed: bool
     code: str
     reason: str
     policy_id: str
     server_id: str
+    principal_id: str
+    principal_groups: tuple[str, ...]
     tool_name: str
     arguments: Mapping[str, Any]
     matched_rule: str | None
@@ -41,6 +61,8 @@ class GateDecision:
             "reason": self.reason,
             "policy_id": self.policy_id,
             "server_id": self.server_id,
+            "principal_id": self.principal_id,
+            "principal_groups": list(self.principal_groups),
             "tool_name": self.tool_name,
             "arguments": thaw_json(self.arguments),
             "matched_rule": self.matched_rule,
@@ -80,8 +102,11 @@ class PolicyGate:
         self,
         tool_name: str,
         arguments: Mapping[str, Any],
+        principal: Principal,
         now: datetime | None = None,
     ) -> GateDecision:
+        if not isinstance(principal, Principal):
+            raise PolicyError("principal must be a trusted Principal")
         checked_at = now or datetime.now(UTC)
         if checked_at.tzinfo is None:
             checked_at = checked_at.replace(tzinfo=UTC)
@@ -93,7 +118,7 @@ class PolicyGate:
         try:
             verify_policy(self.policy, self._trusted_keys, now=checked_at)
         except PolicyError as exc:
-            return self._record(False, "invalid_policy", str(exc), tool_name, arguments, None, checked_at)
+            return self._record(False, "invalid_policy", str(exc), tool_name, arguments, principal, None, checked_at)
 
         server = next(
             (candidate for candidate in self.policy.approved_servers if candidate.server_id == self.server_descriptor.server_id),
@@ -106,6 +131,7 @@ class PolicyGate:
                 f"Server {self.server_descriptor.server_id!r} is not approved",
                 tool_name,
                 arguments,
+                principal,
                 None,
                 checked_at,
             )
@@ -116,47 +142,104 @@ class PolicyGate:
                 f"Server {self.server_descriptor.server_id!r} has an unapproved launch descriptor",
                 tool_name,
                 arguments,
+                principal,
                 f"approved_servers[{server.server_id}]",
                 checked_at,
             )
 
-        tool = next((candidate for candidate in server.tools if candidate.name == tool_name), None)
-        if tool is None:
+        matching = [
+            (index, candidate)
+            for index, candidate in enumerate(server.tools)
+            if candidate.name == tool_name and _subject_matches(candidate, principal)
+        ]
+        denied = [(index, rule) for index, rule in matching if rule.effect == "deny"]
+        if denied:
+            index, _rule = denied[0]
+            return self._record(
+                False,
+                "tool_explicitly_denied",
+                f"Tool {tool_name!r} is denied for principal {principal.principal_id!r}",
+                tool_name,
+                arguments,
+                principal,
+                f"approved_servers[{server.server_id}].tools[{index}]",
+                checked_at,
+            )
+
+        allowed = [(index, rule) for index, rule in matching if rule.effect == "allow"]
+        if not allowed:
             return self._record(
                 False,
                 "tool_not_authorized",
-                f"Tool {tool_name!r} is not approved for server {server.server_id!r}",
+                f"Tool {tool_name!r} is not approved for principal {principal.principal_id!r}",
                 tool_name,
                 arguments,
+                principal,
                 f"approved_servers[{server.server_id}].tools",
                 checked_at,
             )
 
-        rule_path = f"approved_servers[{server.server_id}].tools[{tool.name}].arguments_schema"
-        violations = _validate(thaw_json(arguments), thaw_json(tool.arguments_schema))
-        if violations:
+        validation_results = [
+            (index, _validate(thaw_json(arguments), thaw_json(rule.arguments_schema)))
+            for index, rule in allowed
+        ]
+        accepted = next(((index, errors) for index, errors in validation_results if not errors), None)
+        if accepted is None:
+            violations = validation_results[0][1]
             return self._record(
                 False,
                 "argument_scope_violation",
                 "; ".join(violations),
                 tool_name,
                 arguments,
-                rule_path,
+                principal,
+                "; ".join(
+                    f"approved_servers[{server.server_id}].tools[{index}].arguments_schema"
+                    for index, _errors in validation_results
+                ),
                 checked_at,
             )
+        rule_path = f"approved_servers[{server.server_id}].tools[{accepted[0]}].arguments_schema"
         return self._record(
             True,
             "allowed",
             "Call satisfies the signed MCP authorization policy",
             tool_name,
             arguments,
+            principal,
             rule_path,
             checked_at,
         )
 
-    def tool_rule(self, tool_name: str, now: datetime | None = None) -> ToolRule | None:
+    def tool_rule(
+        self,
+        tool_name: str,
+        principal: Principal,
+        now: datetime | None = None,
+    ) -> ToolRule | None:
         server = self.validate_binding(now=now)
-        return next((tool for tool in server.tools if tool.name == tool_name), None)
+        matching = [tool for tool in server.tools if tool.name == tool_name and _subject_matches(tool, principal)]
+        if any(tool.effect == "deny" for tool in matching):
+            return None
+        return next((tool for tool in matching if tool.effect == "allow"), None)
+
+    def tool_schema(
+        self,
+        tool_name: str,
+        principal: Principal,
+        now: datetime | None = None,
+    ) -> Mapping[str, Any] | None:
+        """Return the effective discovery schema, or None when access is denied."""
+        server = self.validate_binding(now=now)
+        matching = [tool for tool in server.tools if tool.name == tool_name and _subject_matches(tool, principal)]
+        if any(tool.effect == "deny" for tool in matching):
+            return None
+        schemas = [thaw_json(tool.arguments_schema) for tool in matching if tool.effect == "allow"]
+        if not schemas:
+            return None
+        if len(schemas) == 1:
+            return schemas[0]
+        return {"anyOf": schemas}
 
     def _record(
         self,
@@ -165,6 +248,7 @@ class PolicyGate:
         reason: str,
         tool_name: str,
         arguments: Mapping[str, Any],
+        principal: Principal,
         matched_rule: str | None,
         decided_at: datetime,
     ) -> GateDecision:
@@ -174,6 +258,8 @@ class PolicyGate:
             reason=reason,
             policy_id=getattr(self.policy, "policy_id", "unknown"),
             server_id=self.server_descriptor.server_id,
+            principal_id=principal.principal_id,
+            principal_groups=principal.groups,
             tool_name=tool_name,
             arguments=arguments,
             matched_rule=matched_rule,
@@ -181,6 +267,11 @@ class PolicyGate:
         )
         self.audit_log.append(decision)
         return decision
+
+
+def _subject_matches(rule: ToolRule, principal: Principal) -> bool:
+    subjects = rule.subjects
+    return principal.principal_id in subjects.principals or bool(set(principal.groups) & set(subjects.groups))
 
 
 def _validate(value: Any, schema: Mapping[str, Any], path: str = "arguments") -> list[str]:

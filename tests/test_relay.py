@@ -9,21 +9,25 @@ from pathlib import Path
 import socket
 import sys
 import tempfile
+import time
 import unittest
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
+import httpx
 
 from agent_trust import (
     ServerRule,
     StdioServerDescriptor,
+    SubjectSelector,
     ToolRule,
     encode_public_key,
     fingerprint_server_descriptor,
     sign_policy,
 )
+from agent_trust.gateway.local_jwt import mint_local_jwt
 
 
 class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -41,6 +45,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 str(project_root),
             )
             private_key = Ed25519PrivateKey.generate()
+            subjects = SubjectSelector(principals=("local-agent",), groups=("support-managers",))
             rules = (
                 ToolRule(
                     "ticket.get",
@@ -50,6 +55,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "required": ["ticket_id"],
                         "additionalProperties": False,
                     },
+                    subjects,
                 ),
                 ToolRule(
                     "summary.save_draft",
@@ -62,6 +68,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "required": ["destination", "summary"],
                         "additionalProperties": False,
                     },
+                    subjects,
                 ),
             )
             policy = sign_policy(
@@ -125,7 +132,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             required = {
                 "policy_id", "server_id", "tool_name", "arguments", "allowed",
-                "code", "reason", "matched_rule", "decided_at",
+                "code", "reason", "matched_rule", "decided_at", "principal_id", "principal_groups",
             }
             self.assertTrue(all(required <= set(event) for event in audit_events))
 
@@ -138,6 +145,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
             audit_path = temp_dir / "audit.jsonl"
             policy_path = temp_dir / "policy.json"
             keyring_path = temp_dir / "keyring.json"
+            jwt_secret_path = temp_dir / "jwt-secret"
             upstream = StdioServerDescriptor(
                 "support-mcp",
                 python,
@@ -145,6 +153,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 str(project_root),
             )
             private_key = Ed25519PrivateKey.generate()
+            subjects = SubjectSelector(principals=("local-agent",), groups=("support-agents",))
             policy = sign_policy(
                 private_key=private_key,
                 policy_id="http-policy",
@@ -163,6 +172,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                                     "required": ["ticket_id"],
                                     "additionalProperties": False,
                                 },
+                                subjects,
                             ),
                         ),
                     )
@@ -174,7 +184,20 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 json.dumps({"keys": {"http-key": encode_public_key(private_key.public_key())}}),
                 encoding="utf-8",
             )
+            jwt_secret = b"agenttrust-http-test-secret-is-at-least-32-bytes"
+            jwt_secret_path.write_bytes(jwt_secret)
             port = self._unused_local_port()
+            url = f"http://127.0.0.1:{port}/mcp"
+            token = mint_local_jwt(
+                jwt_secret,
+                {
+                    "iss": "agenttrust-test",
+                    "aud": url,
+                    "exp": int(time.time()) + 60,
+                    "name": "http-agent",
+                    "groups": ["support-agents"],
+                },
+            )
             relay_args = [
                 "-m", "agent_trust.mcp.relay",
                 "--transport", "streamable-http",
@@ -190,6 +213,9 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 f"--arg={trace_path}",
                 "--cwd", str(project_root),
                 "--audit-log", str(audit_path),
+                "--jwt-secret-file", str(jwt_secret_path),
+                "--jwt-issuer", "agenttrust-test",
+                "--jwt-audience", url,
             ]
             process = await asyncio.create_subprocess_exec(
                 python,
@@ -200,9 +226,11 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             try:
                 await self._wait_for_port(process, port)
-                url = f"http://127.0.0.1:{port}/mcp"
-                first_tools = await self._exercise_http_relay(url, include_denial=True)
-                second_tools = await self._exercise_http_relay(url, include_denial=False)
+                async with httpx.AsyncClient() as client:
+                    unauthorized = await client.post(url, json={})
+                    self.assertEqual(unauthorized.status_code, 401)
+                first_tools = await self._exercise_http_relay(url, token, include_denial=True)
+                second_tools = await self._exercise_http_relay(url, token, include_denial=False)
                 self.assertEqual(first_tools, ["ticket.get"])
                 self.assertEqual(second_tools, first_tools)
                 self.assertIsNone(process.returncode)
@@ -218,6 +246,8 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 [event["code"] for event in audit_events],
                 ["tool_not_authorized", "allowed", "allowed"],
             )
+            self.assertTrue(all(event["principal_id"] == "http-agent" for event in audit_events))
+            self.assertTrue(all(event["principal_groups"] == ["support-agents"] for event in audit_events))
 
     async def _exercise_relay(
         self,
@@ -252,18 +282,19 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(draft.isError)
                 return names
 
-    async def _exercise_http_relay(self, url: str, *, include_denial: bool) -> list[str]:
-        async with streamable_http_client(url) as (read, write, _get_session_id):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                listed = await session.list_tools()
-                if include_denial:
-                    denied = await session.call_tool("email.send", {"to": "attacker@example.com"})
-                    self.assertTrue(denied.isError)
-                    self.assertIn("tool_not_authorized", denied.content[0].text)
-                allowed = await session.call_tool("ticket.get", {"ticket_id": "481"})
-                self.assertFalse(allowed.isError)
-                return [tool.name for tool in listed.tools]
+    async def _exercise_http_relay(self, url: str, token: str, *, include_denial: bool) -> list[str]:
+        async with httpx.AsyncClient(headers={"Authorization": f"Bearer {token}"}) as http_client:
+            async with streamable_http_client(url, http_client=http_client) as (read, write, _get_session_id):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    listed = await session.list_tools()
+                    if include_denial:
+                        denied = await session.call_tool("email.send", {"to": "attacker@example.com"})
+                        self.assertTrue(denied.isError)
+                        self.assertIn("tool_not_authorized", denied.content[0].text)
+                    allowed = await session.call_tool("ticket.get", {"ticket_id": "481"})
+                    self.assertFalse(allowed.isError)
+                    return [tool.name for tool in listed.tools]
 
     @staticmethod
     def _unused_local_port() -> int:

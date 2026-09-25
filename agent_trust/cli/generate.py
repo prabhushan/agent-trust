@@ -41,8 +41,9 @@ def load_tool_rules(path: str | Path) -> tuple[ToolRule, ...]:
     if not value["tools"]:
         raise PolicyError("Tool rules must contain at least one tool")
     rules = tuple(ToolRule.from_dict(rule) for rule in value["tools"])
-    if len({rule.name for rule in rules}) != len(rules):
-        raise PolicyError("Tool names in the rule file must be unique")
+    serialized = [json.dumps(rule.to_dict(), sort_keys=True) for rule in rules]
+    if len(set(serialized)) != len(serialized):
+        raise PolicyError("Tool rules in the rule file must be unique")
     return rules
 
 
@@ -171,4 +172,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

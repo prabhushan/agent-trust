@@ -77,7 +77,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 issuer="test-admin",
                 key_id="integration-key",
                 approved_servers=[
-                    ServerRule("support-mcp", fingerprint_server_descriptor(upstream), rules)
+                    ServerRule("support-mcp", upstream, fingerprint_server_descriptor(upstream), rules)
                 ],
                 lifetime=timedelta(minutes=10),
             )
@@ -93,13 +93,6 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "-m", "agent_trust.mcp.relay",
                 "--policy", str(policy_path),
                 "--keyring", str(keyring_path),
-                "--server-id", "support-mcp",
-                "--command", python,
-                "--arg=-m",
-                "--arg=demo_support_mcp.server",
-                f"--arg=--trace-file",
-                f"--arg={trace_path}",
-                "--cwd", str(project_root),
                 "--audit-log", str(audit_path),
             ]
 
@@ -162,6 +155,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 approved_servers=[
                     ServerRule(
                         "support-mcp",
+                        upstream,
                         fingerprint_server_descriptor(upstream),
                         (
                             ToolRule(
@@ -205,13 +199,6 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "--port", str(port),
                 "--policy", str(policy_path),
                 "--keyring", str(keyring_path),
-                "--server-id", "support-mcp",
-                "--command", python,
-                "--arg=-m",
-                "--arg=demo_support_mcp.server",
-                "--arg=--trace-file",
-                f"--arg={trace_path}",
-                "--cwd", str(project_root),
                 "--audit-log", str(audit_path),
                 "--jwt-secret-file", str(jwt_secret_path),
                 "--jwt-issuer", "agenttrust-test",

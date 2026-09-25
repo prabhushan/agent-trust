@@ -33,6 +33,7 @@ from ..core.policy import (
     SignedMcpPolicy,
     StdioServerDescriptor,
     decode_public_key,
+    select_server_rule,
 )
 from ..gateway.local_jwt import LocalJwtVerifier
 
@@ -297,10 +298,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--policy", required=True, help="Signed policy JSON file")
     parser.add_argument("--keyring", required=True, help="Trusted Ed25519 public-key JSON file")
-    parser.add_argument("--server-id", required=True, help="Approved server identifier")
-    parser.add_argument("--command", required=True, help="Absolute upstream executable path")
-    parser.add_argument("--arg", action="append", default=[], help="Upstream argument; repeat as needed")
-    parser.add_argument("--cwd", help="Absolute upstream working directory")
+    parser.add_argument(
+        "--server-id",
+        help="Approved server identifier; required only when the policy contains multiple servers",
+    )
     parser.add_argument("--audit-log", help="Append decisions as JSONL instead of writing to stderr")
     parser.add_argument(
         "--principal-id",
@@ -336,12 +337,7 @@ def main() -> None:
     try:
         policy = load_policy(args.policy)
         keyring = load_keyring(args.keyring)
-        descriptor = StdioServerDescriptor(
-            server_id=args.server_id,
-            command=args.command,
-            args=tuple(args.arg),
-            cwd=args.cwd,
-        )
+        descriptor = select_server_rule(policy, args.server_id).descriptor
         jwt_verifier = None
         if args.jwt_secret_file:
             if args.transport != "streamable-http":

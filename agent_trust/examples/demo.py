@@ -73,6 +73,7 @@ async def run_demo() -> None:
         approved_servers=[
             ServerRule(
                 server_id=upstream.server_id,
+                descriptor=upstream,
                 descriptor_sha256=fingerprint_server_descriptor(upstream),
                 tools=_tool_rules(),
             )
@@ -94,11 +95,6 @@ async def run_demo() -> None:
             "-m", "agent_trust.mcp.relay",
             "--policy", str(policy_path),
             "--keyring", str(keyring_path),
-            "--server-id", upstream.server_id,
-            "--command", upstream.command,
-            "--arg=-m",
-            "--arg=demo_support_mcp.server",
-            "--cwd", upstream.cwd or str(project_root),
             "--audit-log", str(audit_path),
         ]
         async with stdio_client(StdioServerParameters(command=python, args=relay_args, cwd=str(project_root))) as streams:

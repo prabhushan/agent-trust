@@ -48,6 +48,7 @@ def make_gate(
         servers.append(
             ServerRule(
                 descriptor.server_id,
+                descriptor,
                 fingerprint_server_descriptor(descriptor),
                 (
                     ToolRule(
@@ -96,7 +97,12 @@ class PolicyGateTests(unittest.TestCase):
     def test_blocks_wrong_and_additional_arguments(self) -> None:
         gate = make_gate()
         wrong = gate.check("ticket.get", {"ticket_id": "482"}, PRINCIPAL, now=NOW)
-        extra = gate.check("ticket.get", {"ticket_id": "481", "export": True}, PRINCIPAL, now=NOW)
+        extra = gate.check(
+            "ticket.get",
+            {"ticket_id": "481", "server_id": "other-mcp", "command": "/tmp/evil"},
+            PRINCIPAL,
+            now=NOW,
+        )
         self.assertEqual(wrong.code, "argument_scope_violation")
         self.assertEqual(extra.code, "argument_scope_violation")
         self.assertIn("unapproved fields", extra.reason)
@@ -123,6 +129,7 @@ class PolicyGateTests(unittest.TestCase):
         def scoped_rule(server: StdioServerDescriptor, ticket_id: str) -> ServerRule:
             return ServerRule(
                 server.server_id,
+                server,
                 fingerprint_server_descriptor(server),
                 (
                     ToolRule(
@@ -175,7 +182,9 @@ class PolicyGateTests(unittest.TestCase):
             policy_id="subject-policy",
             issuer="test-admin",
             key_id="key-1",
-            approved_servers=[ServerRule(descriptor.server_id, fingerprint_server_descriptor(descriptor), rules)],
+            approved_servers=[
+                ServerRule(descriptor.server_id, descriptor, fingerprint_server_descriptor(descriptor), rules)
+            ],
             lifetime=timedelta(hours=1),
             now=NOW,
         )

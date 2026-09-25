@@ -12,6 +12,7 @@ from .policy import (
     encode_public_key,
     fingerprint_server_descriptor,
     sign_policy,
+    select_server_rule,
     verify_policy,
 )
 
@@ -29,5 +30,6 @@ __all__ = [
     "encode_public_key",
     "fingerprint_server_descriptor",
     "sign_policy",
+    "select_server_rule",
     "verify_policy",
 ]

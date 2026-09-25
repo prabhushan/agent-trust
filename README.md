@@ -33,7 +33,7 @@ launch descriptor; it does not hash or attest the executable's contents.
 A signed policy contains:
 
 - Policy identity, issuer, audience, signing key ID, and required expiry
-- One or more server IDs and SHA-256 descriptor fingerprints
+- One or more complete stdio launch descriptors and their SHA-256 fingerprints
 - Subject-aware `allow` and `deny` tool rules for each server
 - Principal IDs and groups on every rule (either match uses OR semantics)
 - A small JSON-Schema-style argument policy for every rule
@@ -161,6 +161,7 @@ policy = sign_policy(
     approved_servers=[
         ServerRule(
             server_id="support-mcp",
+            descriptor=descriptor,
             descriptor_sha256=fingerprint_server_descriptor(descriptor),
             tools=(
                 ToolRule(
@@ -199,13 +200,8 @@ uv run agent-trust-relay \
   --transport stdio \
   --policy /absolute/path/policy.json \
   --keyring /absolute/path/keyring.json \
-  --server-id support-mcp \
   --principal-id local-agent \
   --principal-group support-managers \
-  --command /absolute/path/to/repository/.venv/bin/python \
-  --arg=-m \
-  --arg=demo_support_mcp.server \
-  --cwd /absolute/path/to/repository \
   --audit-log /absolute/path/agent-trust-audit.jsonl
 ```
 
@@ -219,13 +215,8 @@ uv run agent-trust-relay \
   --port 8000 \
   --policy /absolute/path/policy.json \
   --keyring /absolute/path/keyring.json \
-  --server-id support-mcp \
   --principal-id local-agent \
   --principal-group support-managers \
-  --command /absolute/path/to/repository/.venv/bin/python \
-  --arg=-m \
-  --arg=demo_support_mcp.server \
-  --cwd /absolute/path/to/repository \
   --audit-log /absolute/path/config/audit.jsonl
 ```
 
@@ -271,13 +262,16 @@ require OIDC/JWKS validation in phase 4.
 
 The HTTP relay binds to loopback by default and enables MCP SDK DNS-rebinding
 protection. For another hostname, repeat `--allowed-host`; browser clients with
-an Origin header must also repeat `--allowed-origin`. This MVP does not provide
-HTTP authentication or TLS, so do not expose it directly to an untrusted
-network—place an authenticated TLS reverse proxy in front first.
+an Origin header must also repeat `--allowed-origin`. Static mode has no HTTP
+authentication, and local JWT mode is development-only. This MVP does not
+provide TLS, so do not expose it directly to an untrusted network—place an
+authenticated TLS reverse proxy in front first.
 
-The command, arguments, and working directory must exactly match the descriptor
-used to create the signed fingerprint. Use `--arg=<value>` for arguments that
-begin with a hyphen.
+The relay reads the upstream command, ordered arguments, and working directory
+from the signed policy. A single approved server is selected automatically. If
+a policy approves multiple servers, pass `--server-id`; the relay refuses to
+guess. Runtime launch overrides are not accepted, so prompts and tool arguments
+cannot change which process AgentTrust starts.
 
 At startup the relay verifies the signature, key ID, audience, timestamps,
 server ID, and descriptor fingerprint before spawning the upstream. It then:
@@ -293,8 +287,8 @@ evidence, so protect the audit file as potentially sensitive data.
 
 ## Operations
 
-- One relay loads one policy and fronts one upstream. Run separate relay
-  instances for other approved servers.
+- One relay loads one policy and fronts one selected upstream. Run separate
+  relay instances, with `--server-id` when needed, for other approved servers.
 - Stdio mode follows the launching client's lifecycle. Streamable HTTP mode is
   long-running and serves multiple MCP client sessions through `/mcp`.
 - The HTTP service does not automatically restart a failed upstream process;
@@ -304,6 +298,8 @@ evidence, so protect the audit file as potentially sensitive data.
 - Rotate policies before their required expiry. Removing a public key from the
   keyring also prevents policies signed by that key from starting.
 - There is no live revocation service in this MVP.
+- Version 2 policies cannot launch an upstream and must be regenerated as
+  version 3 policies containing signed descriptors.
 - Environment-bearing descriptors, binary attestation, resources, prompts,
   and policy merging are out of scope.
 

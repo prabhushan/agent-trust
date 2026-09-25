@@ -20,6 +20,7 @@ from agent_trust.core.policy import (
     encode_public_key,
     fingerprint_server_descriptor,
     sign_policy,
+    select_server_rule,
     verify_policy,
 )
 
@@ -41,6 +42,7 @@ def rule(server: StdioServerDescriptor | None = None, tool_name: str = "ticket.g
     server = server or descriptor()
     return ServerRule(
         server_id=server.server_id,
+        descriptor=server,
         descriptor_sha256=fingerprint_server_descriptor(server),
         tools=(
             ToolRule(
@@ -84,6 +86,8 @@ class SignedPolicyTests(unittest.TestCase):
         parsed = SignedMcpPolicy.from_json(policy.to_json())
         verify_policy(parsed, self.keyring, now=NOW)
         self.assertEqual(parsed.to_dict(), policy.to_dict())
+        self.assertEqual(parsed.version, 3)
+        self.assertEqual(parsed.approved_servers[0].descriptor, descriptor())
 
     def test_canonical_signing_ignores_schema_key_order(self) -> None:
         first = ToolRule("x", {"type": "object", "required": [], "properties": {}}, SUBJECTS)
@@ -91,11 +95,11 @@ class SignedPolicyTests(unittest.TestCase):
         server = descriptor()
         first_policy = signed_policy(
             self.private_key,
-            servers=[ServerRule(server.server_id, fingerprint_server_descriptor(server), (first,))],
+            servers=[ServerRule(server.server_id, server, fingerprint_server_descriptor(server), (first,))],
         )
         second_policy = signed_policy(
             self.private_key,
-            servers=[ServerRule(server.server_id, fingerprint_server_descriptor(server), (second,))],
+            servers=[ServerRule(server.server_id, server, fingerprint_server_descriptor(server), (second,))],
         )
         self.assertEqual(first_policy.signature, second_policy.signature)
 
@@ -126,10 +130,10 @@ class SignedPolicyTests(unittest.TestCase):
         server = descriptor()
         digest = fingerprint_server_descriptor(server)
         with self.assertRaisesRegex(PolicyError, "at least one tool"):
-            ServerRule(server.server_id, digest, ())
+            ServerRule(server.server_id, server, digest, ())
         duplicate_tool = ToolRule("ticket.get", {"type": "object"}, SUBJECTS)
         with self.assertRaisesRegex(PolicyError, "unique"):
-            ServerRule(server.server_id, digest, (duplicate_tool, duplicate_tool))
+            ServerRule(server.server_id, server, digest, (duplicate_tool, duplicate_tool))
         duplicate_server = rule(server)
         with self.assertRaisesRegex(PolicyError, "server IDs must be unique"):
             signed_policy(self.private_key, servers=[duplicate_server, duplicate_server])
@@ -140,12 +144,38 @@ class SignedPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "unknown"):
             SignedMcpPolicy.from_dict(value)
         value.pop("unexpected")
+        value["version"] = 2
+        with self.assertRaisesRegex(PolicyError, "Unsupported policy version"):
+            SignedMcpPolicy.from_dict(value)
         value["version"] = 99
         with self.assertRaisesRegex(PolicyError, "Unsupported policy version"):
             SignedMcpPolicy.from_dict(value)
         value["version"] = True
         with self.assertRaisesRegex(PolicyError, "Unsupported policy version"):
             SignedMcpPolicy.from_dict(value)
+
+    def test_rejects_tampered_or_unsupported_embedded_descriptor(self) -> None:
+        value = signed_policy(self.private_key).to_dict()
+        value["approved_servers"][0]["descriptor"]["args"].append("attacker.module")
+        with self.assertRaisesRegex(PolicyError, "fingerprint does not match"):
+            SignedMcpPolicy.from_dict(value)
+
+        value = signed_policy(self.private_key).to_dict()
+        value["approved_servers"][0]["descriptor"]["transport"] = "http"
+        with self.assertRaisesRegex(PolicyError, "Unsupported server transport"):
+            SignedMcpPolicy.from_dict(value)
+
+    def test_selects_single_server_and_requires_id_for_multiple(self) -> None:
+        single = signed_policy(self.private_key)
+        self.assertEqual(select_server_rule(single).server_id, "support-mcp")
+
+        billing = descriptor("billing-mcp", args=("billing",))
+        multiple = signed_policy(self.private_key, servers=[rule(), rule(billing)])
+        with self.assertRaisesRegex(PolicyError, "multiple servers.*--server-id"):
+            select_server_rule(multiple)
+        self.assertEqual(select_server_rule(multiple, "billing-mcp").descriptor, billing)
+        with self.assertRaisesRegex(PolicyError, "Unknown server ID.*billing-mcp.*support-mcp"):
+            select_server_rule(multiple, "unknown")
 
     def test_rejects_non_json_schema_values(self) -> None:
         with self.assertRaisesRegex(PolicyError, "keys.*strings"):

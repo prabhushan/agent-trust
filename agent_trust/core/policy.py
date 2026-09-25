@@ -17,7 +17,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 
-POLICY_VERSION = 2
+POLICY_VERSION = 3
 POLICY_AUDIENCE = "agent-trust-relay"
 SIGNATURE_ALGORITHM = "Ed25519"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -153,6 +153,33 @@ class StdioServerDescriptor:
             "cwd": str(cwd),
         }
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the complete signed launch descriptor."""
+        if self.cwd is None:
+            raise PolicyError("Signed stdio descriptors must include an absolute cwd")
+        return {
+            "transport": "stdio",
+            "command": self.command,
+            "args": list(self.args),
+            "cwd": self.cwd,
+        }
+
+    @classmethod
+    def from_dict(cls, server_id: str, value: Mapping[str, Any]) -> "StdioServerDescriptor":
+        if not isinstance(value, Mapping):
+            raise PolicyError("Malformed stdio server descriptor")
+        _require_exact_keys(value, {"transport", "command", "args", "cwd"}, "stdio server descriptor")
+        if value["transport"] != "stdio":
+            raise PolicyError(f"Unsupported server transport: {value['transport']!r}")
+        if not isinstance(value["args"], list):
+            raise PolicyError("Stdio descriptor args must be a list")
+        return cls(
+            server_id=server_id,
+            command=value["command"],
+            args=tuple(value["args"]),
+            cwd=value["cwd"],
+        )
+
 
 def fingerprint_server_descriptor(descriptor: StdioServerDescriptor) -> str:
     """Hash a normalized stdio descriptor; this is not binary attestation."""
@@ -234,14 +261,23 @@ class ToolRule:
 @dataclass(frozen=True)
 class ServerRule:
     server_id: str
+    descriptor: StdioServerDescriptor
     descriptor_sha256: str
     tools: tuple[ToolRule, ...]
 
     def __post_init__(self) -> None:
         if not isinstance(self.server_id, str) or not self.server_id.strip():
             raise PolicyError("Server rule server_id must be non-empty")
+        if not isinstance(self.descriptor, StdioServerDescriptor):
+            raise PolicyError("Server rule descriptor must be a StdioServerDescriptor")
+        if self.descriptor.server_id != self.server_id:
+            raise PolicyError("Server rule and descriptor server IDs must match")
+        if self.descriptor.cwd is None:
+            raise PolicyError("Signed server descriptors must include an absolute cwd")
         if not isinstance(self.descriptor_sha256, str) or _SHA256_RE.fullmatch(self.descriptor_sha256) is None:
             raise PolicyError("descriptor_sha256 must be a lowercase SHA-256 hex digest")
+        if fingerprint_server_descriptor(self.descriptor) != self.descriptor_sha256:
+            raise PolicyError(f"Descriptor fingerprint does not match server {self.server_id!r}")
         if not isinstance(self.tools, (tuple, list)) or not self.tools:
             raise PolicyError("Each approved server must contain at least one tool")
         tools = tuple(self.tools)
@@ -255,6 +291,7 @@ class ServerRule:
     def to_dict(self) -> dict[str, Any]:
         return {
             "server_id": self.server_id,
+            "descriptor": self.descriptor.to_dict(),
             "descriptor_sha256": self.descriptor_sha256,
             "tools": [tool.to_dict() for tool in self.tools],
         }
@@ -263,11 +300,12 @@ class ServerRule:
     def from_dict(cls, value: Mapping[str, Any]) -> "ServerRule":
         if not isinstance(value, Mapping):
             raise PolicyError("Malformed server rule")
-        _require_exact_keys(value, {"server_id", "descriptor_sha256", "tools"}, "server rule")
+        _require_exact_keys(value, {"server_id", "descriptor", "descriptor_sha256", "tools"}, "server rule")
         if not isinstance(value["tools"], list):
             raise PolicyError("Server rule tools must be a list")
         return cls(
             server_id=value["server_id"],
+            descriptor=StdioServerDescriptor.from_dict(value["server_id"], value["descriptor"]),
             descriptor_sha256=value["descriptor_sha256"],
             tools=tuple(ToolRule.from_dict(tool) for tool in value["tools"]),
         )
@@ -434,3 +472,19 @@ def verify_policy(
         raise PolicyError("Policy is not yet valid")
     if current >= expires:
         raise PolicyError("Policy has expired")
+
+
+def select_server_rule(policy: SignedMcpPolicy, server_id: str | None = None) -> ServerRule:
+    """Select one signed server, requiring an ID only when selection is ambiguous."""
+    if not isinstance(policy, SignedMcpPolicy):
+        raise PolicyError("Expected a SignedMcpPolicy")
+    if server_id is None:
+        if len(policy.approved_servers) == 1:
+            return policy.approved_servers[0]
+        available = ", ".join(sorted(server.server_id for server in policy.approved_servers))
+        raise PolicyError(f"Policy approves multiple servers; pass --server-id with one of: {available}")
+    selected = next((server for server in policy.approved_servers if server.server_id == server_id), None)
+    if selected is None:
+        available = ", ".join(sorted(server.server_id for server in policy.approved_servers))
+        raise PolicyError(f"Unknown server ID {server_id!r}; approved servers: {available}")
+    return selected

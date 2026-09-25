@@ -222,4 +222,5 @@ AGENTTRUST_HACKATHON_SUMMARY.md
 config/policy.json
 config/keyring.json
 config/signing-key.pem
+config/local-jwt-secret
 config/audit.jsonl

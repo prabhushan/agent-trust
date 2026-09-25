@@ -220,6 +220,7 @@ AGENTTRUST_HACKATHON_SUMMARY.md
 
 # AgentTrust generated policy material
 config/policy.json
+config/policy.json.bak
 config/keyring.json
 config/signing-key.pem
 config/local-jwt-secret

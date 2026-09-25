@@ -13,6 +13,7 @@ import unittest
 from agent_trust import PolicyGate, PolicyError, Principal, SignedMcpPolicy, StdioServerDescriptor
 from agent_trust.cli.generate import generate_policy_files, load_tool_rules
 from agent_trust.mcp.relay import load_keyring
+from demo_support_mcp.server import ticket_get
 
 
 class PolicyGeneratorTests(unittest.TestCase):
@@ -40,8 +41,23 @@ class PolicyGeneratorTests(unittest.TestCase):
             gate = PolicyGate(policy, keyring, descriptor)
             gate.validate_binding()
             self.assertTrue(gate.check("ticket.get", {"ticket_id": "481"}, Principal("local-agent")).allowed)
+            self.assertTrue(gate.check("ticket.get", {"ticket_id": "482"}, Principal("local-agent")).allowed)
+            denied = gate.check(
+                "email.send",
+                {"to": "attacker@example.com", "body": "all customer records"},
+                Principal("local-agent"),
+            )
+            self.assertFalse(denied.allowed)
+            self.assertEqual(denied.code, "tool_explicitly_denied")
             self.assertEqual(os.stat(paths["private_key"]).st_mode & 0o777, 0o600)
             self.assertEqual(set(json.loads(paths["keyring"].read_text())["keys"]), {"generated-key"})
+
+    def test_demo_tickets_separate_benign_and_malicious_content(self) -> None:
+        benign = ticket_get("481")
+        malicious = ticket_get("482")
+        self.assertNotIn("Ignore previous instructions", benign["body"])
+        self.assertIn("Ignore previous instructions", malicious["body"])
+        self.assertIn("email.send", malicious["body"])
 
     def test_refuses_to_overwrite_generated_material(self) -> None:
         root = Path(__file__).resolve().parents[1]

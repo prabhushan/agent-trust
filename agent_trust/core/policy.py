@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 from types import MappingProxyType
@@ -136,27 +137,29 @@ class StdioServerDescriptor:
             raise PolicyError("server_id must be non-empty")
         if not isinstance(self.command, str) or not self.command.strip():
             raise PolicyError("command must be non-empty")
-        if not Path(self.command).is_absolute():
-            raise PolicyError("stdio command must be an absolute path")
         if not isinstance(self.args, (tuple, list)) or not all(isinstance(arg, str) for arg in self.args):
             raise PolicyError("stdio args must contain strings")
-        if self.cwd is not None and (not isinstance(self.cwd, str) or not Path(self.cwd).is_absolute()):
-            raise PolicyError("stdio cwd must be an absolute path when supplied")
+        if self.cwd is not None and (not isinstance(self.cwd, str) or not self.cwd.strip()):
+            raise PolicyError("stdio cwd must be non-empty when supplied")
         object.__setattr__(self, "args", tuple(self.args))
 
     def fingerprint_payload(self) -> dict[str, Any]:
-        cwd = Path(self.cwd).resolve() if self.cwd is not None else Path.cwd().resolve()
+        def normalized(value: str) -> str:
+            path = Path(value)
+            return str(path.resolve()) if path.is_absolute() else os.path.normpath(value)
+
+        cwd = self.cwd if self.cwd is not None else "."
         return {
             "transport": "stdio",
-            "command": str(Path(self.command).resolve()),
+            "command": normalized(self.command),
             "args": list(self.args),
-            "cwd": str(cwd),
+            "cwd": normalized(cwd),
         }
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the complete signed launch descriptor."""
         if self.cwd is None:
-            raise PolicyError("Signed stdio descriptors must include an absolute cwd")
+            raise PolicyError("Signed stdio descriptors must include a cwd")
         return {
             "transport": "stdio",
             "command": self.command,
@@ -273,7 +276,7 @@ class ServerRule:
         if self.descriptor.server_id != self.server_id:
             raise PolicyError("Server rule and descriptor server IDs must match")
         if self.descriptor.cwd is None:
-            raise PolicyError("Signed server descriptors must include an absolute cwd")
+            raise PolicyError("Signed server descriptors must include a cwd")
         if not isinstance(self.descriptor_sha256, str) or _SHA256_RE.fullmatch(self.descriptor_sha256) is None:
             raise PolicyError("descriptor_sha256 must be a lowercase SHA-256 hex digest")
         if fingerprint_server_descriptor(self.descriptor) != self.descriptor_sha256:

@@ -11,7 +11,7 @@
         "type": "object",
         "properties": {
           "ticket_id": {
-            "const": "481"
+            "enum": ["481", "482"]
           }
         },
         "required": [
@@ -50,6 +50,15 @@
       "subjects": {
         "groups": ["support-agents"],
         "principals": []
+      },
+      "arguments_schema": {}
+    },
+    {
+      "effect": "deny",
+      "name": "email.send",
+      "subjects": {
+        "groups": ["support-agents", "support-managers"],
+        "principals": ["local-agent"]
       },
       "arguments_schema": {}
     }

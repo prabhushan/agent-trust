@@ -107,11 +107,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--server-id", required=True, help="Stable ID for the approved MCP server")
     parser.add_argument(
         "--command",
-        default=str(Path(sys.executable).absolute()),
-        help="Absolute upstream executable (default: this uv environment's Python)",
+        default=os.path.relpath(Path(sys.executable).absolute(), Path.cwd()),
+        help="Upstream executable relative to the current directory (default: uv environment Python)",
     )
     parser.add_argument("--arg", action="append", default=[], help="Upstream argument; repeat as needed")
-    parser.add_argument("--cwd", default=str(Path.cwd().resolve()), help="Absolute upstream working directory")
+    parser.add_argument("--cwd", default=".", help="Upstream working directory (default: current directory)")
     parser.add_argument("--policy-id", help="Policy ID (default: <server-id>-policy)")
     parser.add_argument("--issuer", default="local-admin", help="Policy issuer")
     parser.add_argument("--key-id", default="local-ed25519-key", help="Public-key identifier")

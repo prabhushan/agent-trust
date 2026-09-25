@@ -6,6 +6,7 @@ import argparse
 import asyncio
 from contextlib import AbstractContextManager, asynccontextmanager
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any, AsyncIterator, Mapping, TextIO
@@ -154,10 +155,21 @@ async def relay_runtime(
     """Validate policy and own the audit writer and one upstream process."""
     gate = PolicyGate(policy, trusted_keys, descriptor)
     gate.validate_binding()  # Refuse startup before the upstream process exists.
+    launch_root = Path.cwd()
+    launch_cwd = Path(descriptor.cwd or ".")
+    if not launch_cwd.is_absolute():
+        launch_cwd = (launch_root / launch_cwd).absolute()
+    launch_command = descriptor.command
+    command_path = Path(launch_command)
+    is_path_command = os.sep in launch_command or (
+        os.altsep is not None and os.altsep in launch_command
+    )
+    if not command_path.is_absolute() and is_path_command:
+        launch_command = str((launch_root / command_path).absolute())
     params = StdioServerParameters(
-        command=descriptor.command,
+        command=launch_command,
         args=list(descriptor.args),
-        cwd=descriptor.cwd,
+        cwd=str(launch_cwd),
     )
     with AuditWriter(audit_log) as audit:
         async with stdio_client(params) as (upstream_read, upstream_write):

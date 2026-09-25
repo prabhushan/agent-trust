@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 import json
+import os
 from pathlib import Path
 import socket
 import sys
@@ -34,15 +35,16 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_filters_blocks_forwards_audits_and_reuses_policy(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         python = str(Path(sys.executable).absolute())
+        relative_python = os.path.relpath(python, project_root)
         with tempfile.TemporaryDirectory(prefix="agent-trust-test-") as temp:
             temp_dir = Path(temp)
             trace_path = temp_dir / "upstream.jsonl"
             audit_path = temp_dir / "audit.jsonl"
             upstream = StdioServerDescriptor(
                 "support-mcp",
-                python,
+                relative_python,
                 ("-m", "demo_support_mcp.server", "--trace-file", str(trace_path)),
-                str(project_root),
+                ".",
             )
             private_key = Ed25519PrivateKey.generate()
             subjects = SubjectSelector(principals=("local-agent",), groups=("support-managers",))

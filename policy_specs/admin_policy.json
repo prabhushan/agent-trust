@@ -1,0 +1,106 @@
+{
+  "format_version": 1,
+  "policy": {
+    "issuer": "local-admin",
+    "key_id": "local-ed25519-key",
+    "policy_id": "support-mcp-policy",
+    "validity_seconds": 2592000
+  },
+  "servers": [
+    {
+      "descriptor": {
+        "args": [
+          "-m",
+          "demo_support_mcp.server"
+        ],
+        "command": ".venv/bin/python3",
+        "cwd": ".",
+        "transport": "stdio"
+      },
+      "server_id": "support-mcp",
+      "tools": [
+        {
+          "arguments_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "ticket_id": {
+                "enum": [
+                  "481",
+                  "482"
+                ]
+              }
+            },
+            "required": [
+              "ticket_id"
+            ],
+            "type": "object"
+          },
+          "effect": "allow",
+          "name": "ticket.get",
+          "subjects": {
+            "groups": [
+              "support-agents",
+              "support-managers"
+            ],
+            "principals": [
+              "local-agent"
+            ]
+          }
+        },
+        {
+          "arguments_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "destination": {
+                "const": "support-manager-drafts"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "destination",
+              "summary"
+            ],
+            "type": "object"
+          },
+          "effect": "allow",
+          "name": "summary.save_draft",
+          "subjects": {
+            "groups": [
+              "support-managers"
+            ],
+            "principals": [
+              "local-agent"
+            ]
+          }
+        },
+        {
+          "arguments_schema": {},
+          "effect": "deny",
+          "name": "summary.save_draft",
+          "subjects": {
+            "groups": [
+              "support-agents"
+            ],
+            "principals": []
+          }
+        },
+        {
+          "arguments_schema": {},
+          "effect": "deny",
+          "name": "email.send",
+          "subjects": {
+            "groups": [
+              "support-agents",
+              "support-managers"
+            ],
+            "principals": [
+              "local-agent"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

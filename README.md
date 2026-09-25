@@ -91,8 +91,8 @@ openssl version
 ```
 
 Run `uv sync` from the repository root to install the Python packages declared
-in `pyproject.toml`, including the MCP SDK, Cryptography, Starlette, Uvicorn,
-and HTTPX through the resolved dependency set. The included
+in `pyproject.toml`, including the MCP SDK, Cryptography, Starlette, Streamlit,
+Uvicorn, and HTTPX through the resolved dependency set. The included
 `demo_support_mcp` package provides the synthetic upstream MCP server. Docker,
 Node.js, and a separate database are not required.
 
@@ -116,7 +116,9 @@ environment. It is unnecessary if no other environment is active.
 
 The policy embeds the approved upstream command, ordered arguments, working
 directory, tool rules, and subject rules. The relay will not accept runtime
-overrides for this launch configuration.
+overrides for this launch configuration. By default, generation records the
+current environment Python relative to this repository and uses `.` as the MCP
+working directory.
 
 ```bash
 uv run agent-trust-generate \
@@ -131,6 +133,14 @@ This creates `config/policy.json`, `config/keyring.json`, and the private
 `config/signing-key.pem`. Existing files are not overwritten. If these files
 already exist and are still valid, reuse them. Use `--force` only when you
 intend to rotate and replace all three policy files.
+
+The synthetic server returns normal support content for ticket `481`. Ticket
+`482` contains an explicit prompt-injection instruction asking the model to
+call `email.send`. The policy permits reading both tickets, explicitly denies
+`email.send`, and does not advertise it; if a client attempts that call,
+AgentTrust rejects it and records the denial in `config/audit.jsonl`. MCP
+content does not execute tools by itself—the client or model must make the
+attempted `tools/call`.
 
 ### 3. Create the JWT secret and mint a token
 
@@ -189,67 +199,22 @@ variable:
 export AGENTTRUST_JWT='paste-the-token-here'
 ```
 
-Save the following as `mcp_client.py`:
-
-```python
-import asyncio
-import os
-
-import httpx
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
-
-
-async def main() -> None:
-    token = os.environ["AGENTTRUST_JWT"]
-    url = "http://127.0.0.1:8000/mcp"
-
-    async with httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {token}"}
-    ) as http_client:
-        async with streamable_http_client(
-            url,
-            http_client=http_client,
-        ) as (read, write, _get_session_id):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-
-                tools = await session.list_tools()
-                print("Permitted tools:", [tool.name for tool in tools.tools])
-
-                ticket = await session.call_tool(
-                    "ticket.get",
-                    {"ticket_id": "481"},
-                )
-                print("ticket.get:", ticket.isError)
-                for item in ticket.content:
-                    print(getattr(item, "text", item))
-
-                draft = await session.call_tool(
-                    "summary.save_draft",
-                    {
-                        "destination": "support-manager-drafts",
-                        "summary": "Ticket 481 was reviewed.",
-                    },
-                )
-                print("summary.save_draft:", draft.isError)
-                for item in draft.content:
-                    print(getattr(item, "text", item))
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-Run the client:
+Run the included `mcp_client.py`:
 
 ```bash
-uv run python mcp_client.py
+uv run python mcp_client.py 481
+uv run python mcp_client.py 482
 ```
 
-The client prints only the tools permitted for `test-agent` and the
-`support-managers` group, followed by both tool results. To inspect
-authorization decisions in another terminal, run:
+Ticket `481` exercises the benign path. Ticket `482` returns malicious content.
+An ordinary `ClientSession` does not interpret tool results or autonomously
+call another tool, so this controlled client deliberately recognizes the known
+synthetic instruction and attempts `email.send`. AgentTrust returns
+`tool_explicitly_denied`, and the denied call is added to the audit log. Other
+ticket IDs can also be passed and will be rejected by the signed argument
+policy.
+
+To inspect authorization decisions in another terminal, run:
 
 ```bash
 tail -f config/audit.jsonl
@@ -266,6 +231,81 @@ unset AGENTTRUST_JWT
 Local HS256 JWT mode is for development only. Anyone with
 `config/local-jwt-secret` can mint any principal or group. Production use
 requires TLS and validation against a trusted OIDC/JWKS identity provider.
+
+## Local admin UI
+
+Start the Streamlit policy administrator from the repository root:
+
+```bash
+uv run agent-trust-admin
+```
+
+Open `http://127.0.0.1:8501` and sign in with the local demo credentials:
+
+```text
+Username: admin
+Password: password
+```
+
+Override both values before any shared use:
+
+```bash
+export AGENTTRUST_ADMIN_USERNAME='local-admin'
+export AGENTTRUST_ADMIN_PASSWORD='replace-with-a-strong-password'
+uv run agent-trust-admin
+```
+
+The UI verifies `config/policy.json` with `config/keyring.json`, displays the
+approved MCP launch descriptors and tool rules, and can append a new stdio MCP
+server. A successful addition updates `policy_specs/admin_policy.json`, backs
+up the previous policy as `config/policy.json.bak`, and re-signs the complete
+policy with `config/signing-key.pem`.
+
+For local testing, the signed policy stores executable and working-directory
+paths relative to the AgentTrust repository. Start the relay from the
+`agent-trust` root: it resolves both values against that launch directory.
+Policy metadata and MCP descriptors are shown as labeled fields. A read-only
+full-policy JSON view appears below the approved MCP server cards without
+exposing a user-specific absolute repository path.
+
+Use the **Add MCP server** tab to enter an executable name or path and an
+absolute or relative working directory. Absolute inputs are converted to paths
+relative to the directory where the admin UI is running; relative inputs are
+stored as entered after normalization. The local-only admin UI intentionally
+does not verify that the command or directory exists. Invalid paths will cause
+the relay to fail when that server is selected. Run the UI and relay from the
+`agent-trust` root so both use the same base directory. Enter launch arguments
+one per line in execution order, then enter the shared tool argument schema as
+a JSON object. Below the schema, each tool
+authorization row accepts an `allow` or `deny` effect, tool name, and
+comma-separated principals and groups. The schema is applied to every rule in
+that submission.
+
+The policy tab can delete an approved MCP server after explicit confirmation.
+Deletion regenerates and re-signs both the policy and admin manifest. The final
+remaining server cannot be deleted because an AgentTrust policy must approve at
+least one MCP server.
+
+The **Audit logs** tab reads the latest authorization decisions from
+`config/audit.jsonl`, summarizes allowed and denied calls, and displays the
+principal, groups, MCP server, tool, decision code, reason, and arguments. Use
+the Refresh button to reload decisions written by a running relay.
+
+The UI never launches the configured MCP process. Restart the relay after a
+policy change. A policy containing multiple MCP servers also requires the
+relay's `--server-id` option.
+
+The following environment variables override the default administration
+paths:
+
+- `AGENTTRUST_POLICY_PATH`
+- `AGENTTRUST_KEYRING_PATH`
+- `AGENTTRUST_SIGNING_KEY_PATH`
+- `AGENTTRUST_ADMIN_MANIFEST_PATH`
+
+This login is a localhost development control, not production identity. The
+admin UI binds to `127.0.0.1`; it does not provide TLS, persistent sessions,
+rate limiting, password recovery, or multi-user administration.
 
 ## Policy customization
 
@@ -306,7 +346,9 @@ The relay reads the upstream command, ordered arguments, and working directory
 from the signed policy. A single approved server is selected automatically. If
 a policy approves multiple servers, pass `--server-id`; the relay refuses to
 guess. Runtime launch overrides are not accepted, so prompts and tool arguments
-cannot change which process AgentTrust starts.
+cannot change which process AgentTrust starts. For this local-testing setup,
+relative launch paths are resolved from the directory where the relay starts;
+run it from the `agent-trust` root.
 
 At startup the relay verifies the signature, key ID, audience, timestamps,
 server ID, and descriptor fingerprint before spawning the upstream. It then:

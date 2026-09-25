@@ -196,11 +196,23 @@ class SignedPolicyTests(unittest.TestCase):
         self.assertEqual(fingerprint_server_descriptor(first), fingerprint_server_descriptor(same))
         self.assertNotEqual(fingerprint_server_descriptor(first), fingerprint_server_descriptor(different))
 
-    def test_descriptor_requires_absolute_paths(self) -> None:
-        with self.assertRaisesRegex(PolicyError, "absolute"):
-            StdioServerDescriptor("x", "python", (), None)
-        with self.assertRaisesRegex(PolicyError, "absolute"):
-            StdioServerDescriptor("x", str(Path(sys.executable).absolute()), (), "relative")
+    def test_descriptor_accepts_relative_paths_and_requires_cwd(self) -> None:
+        relative = StdioServerDescriptor("x", ".venv/bin/python3", ("-m", "server"), ".")
+        self.assertEqual(relative.to_dict()["command"], ".venv/bin/python3")
+        self.assertEqual(relative.to_dict()["cwd"], ".")
+        self.assertEqual(
+            fingerprint_server_descriptor(relative),
+            fingerprint_server_descriptor(
+                StdioServerDescriptor("x", ".venv/bin/python3", ("-m", "server"), ".")
+            ),
+        )
+        with self.assertRaisesRegex(PolicyError, "include a cwd"):
+            ServerRule(
+                "x",
+                StdioServerDescriptor("x", "python", (), None),
+                "0" * 64,
+                (ToolRule("x", {"type": "object"}, SUBJECTS),),
+            )
 
     def test_public_key_round_trip(self) -> None:
         encoded = encode_public_key(self.private_key.public_key())

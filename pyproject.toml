@@ -2,7 +2,7 @@
 name = "agent-trust"
 version = "0.1.0"
 description = "Signed MCP server, tool, and argument authorization policies with a stdio enforcement relay"
-readme = "agent_trust/README.md"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "cryptography>=44",

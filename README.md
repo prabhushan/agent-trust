@@ -282,50 +282,20 @@ Open <http://127.0.0.1:8501> and sign in with the local demo credentials:
 ```
 
 Override both values before any shared use:
-
+```
 export AGENTTRUST_ADMIN_USERNAME='local-admin'  
 export AGENTTRUST_ADMIN_PASSWORD= &lt;a-strong-password&gt;  
 uv run agent-trust-admin
+```
+The UI verifies `config/policy.json` against `config/keyring.json`, shows the approved MCP descriptors and tool rules, and lets you manage servers:
 
-The UI verifies config/policy.json with config/keyring.json, displays the  
-approved MCP launch descriptors and tool rules, and can append a new stdio MCP  
-server. A successful addition updates policy_specs/admin_policy.json, backs  
-up the previous policy as config/policy.json.bak, and re-signs the complete  
-policy with config/signing-key.pem.
+- **Add MCP server** — command, working directory, launch arguments (one per line), a shared JSON argument schema, and one row per tool rule (effect, name, principals, groups). Paths are stored relative to the repository; absolute inputs are converted automatically. The UI does **not** verify the command or directory exists — an invalid path only fails when the relay later selects that server. Run the UI and relay from the `agent-trust` root so both resolve paths the same way.
+- **Delete** — removes a server after confirmation; the last remaining server can't be deleted (a policy must approve at least one).
+- **Audit logs** — reads `config/audit.jsonl`: principal, groups, server, tool, decision, reason, arguments; Refresh reloads it.
 
-For local testing, the signed policy stores executable and working-directory  
-paths relative to the AgentTrust repository. Start the relay from the  
-agent-trust root: it resolves both values against that launch directory.  
-Policy metadata and MCP descriptors are shown as labeled fields. A read-only  
-full-policy JSON view appears below the approved MCP server cards without  
-exposing a user-specific absolute repository path.
+Every change updates `policy_specs/admin_policy.json`, backs up the previous policy to `config/policy.json.bak`, and re-signs with `config/signing-key.pem`. The read-only JSON view below hides your absolute repository path.
 
-Use the **Add MCP server** tab to enter an executable name or path and an  
-absolute or relative working directory. Absolute inputs are converted to paths  
-relative to the directory where the admin UI is running; relative inputs are  
-stored as entered after normalization. The local-only admin UI intentionally  
-does not verify that the command or directory exists. Invalid paths will cause  
-the relay to fail when that server is selected. Run the UI and relay from the  
-agent-trust root so both use the same base directory. Enter launch arguments  
-one per line in execution order, then enter the shared tool argument schema as  
-a JSON object. Below the schema, each tool  
-authorization row accepts an allow or deny effect, tool name, and  
-comma-separated principals and groups. The schema is applied to every rule in  
-that submission.
-
-The policy tab can delete an approved MCP server after explicit confirmation.  
-Deletion regenerates and re-signs both the policy and admin manifest. The final  
-remaining server cannot be deleted because an AgentTrust policy must approve at  
-least one MCP server.
-
-The **Audit logs** tab reads the latest authorization decisions from  
-config/audit.jsonl, summarizes allowed and denied calls, and displays the  
-principal, groups, MCP server, tool, decision code, reason, and arguments. Use  
-the Refresh button to reload decisions written by a running relay.
-
-The UI never launches the configured MCP process. Restart the relay after a  
-policy change. A policy containing multiple MCP servers also requires the  
-relay's --server-id option.
+The UI never launches the MCP process itself — restart the relay after any change, and pass `--server-id` if the policy approves more than one server.
 
 ## Gateway roadmap placeholders
 

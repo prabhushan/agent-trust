@@ -31,7 +31,7 @@ AgentTrust addresses these OWASP Agentic Security Initiative threat classes:
 | ASI01 — Agent Goal Hijack            | Untrusted tool output (the ticket body) proposes actions outside the task the user actually asked for |
 | ASI02 — Tool Misuse and Exploitation | The agent selects an unauthorized tool (email.send), server, or argument value                        |
 
-![AgentTrust architecture](architecture.png)
+![AgentTrust architecture](architecture_1.png)
 
 ## Components
 

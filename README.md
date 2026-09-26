@@ -287,8 +287,7 @@ email.send advertised: False
 Ticket 481: The export button returns an error after selecting the monthly report.
 ```      
  
-** Test scenario – return Malicious content
-**
+**Test scenario – return Malicious content**
 ```
 uv run python mcp_client_direct.py 482
 ```

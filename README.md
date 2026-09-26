@@ -6,7 +6,7 @@
 
 A trusted administrator, working through the **Admin UI** registers different upstream MCP servers along with the different tools available and which are specifically allowed to which groups based on his/her organization. This is a **signed policy.** The relay validates arguments against signed policy constraints and gatekeeper prevents any calls to the upstream MCP servers if it fails validation.
 
-The **AgentTrust Gatekeeper** loads the policy on load and to authorize every call before an MCP client's request reaches an upstream MCP server.
+The **AgentTrust Gateway** loads the policy on load and to authorize every call before an MCP client's request reaches an upstream MCP server.
 
 AgentTrust provides:
 

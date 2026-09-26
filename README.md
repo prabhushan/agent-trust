@@ -82,12 +82,13 @@ demo.
 
 This is the start of the flow, where an AI agent or any MCP client initiates a call to the upstream MCP servers through AgentTrust. For this demo 2 different clients are available.
 
-mcp_client_llm.py - an LLM-driven client (via  
-OpenRouter) — connects to the Gatekeeper over Streamable HTTP with a bearer  
+**mcp_client_direct.py** – python based MCP client to call the upstream MCP servers through AgentTrust.
+
+**mcp_client_llm.py** - an LLM-driven client (via  
+OpenRouter needs Openrouter Key) — connects to the Gatekeeper over Streamable HTTP with a bearer  
 JWT. (Stdio is also supported, using a static principal instead of a JWT; not  
 shown in this diagram.)
 
-mcp_client_direct.py – python based MCP client to call the upstream MCP servers through AgentTrust.
 
 ## Policy
 
@@ -264,7 +265,7 @@ variable:
     export AGENTTRUST_JWT='paste-the-token-here'
 ```
 
-Test scenario
+### Test scenario
 
 AI agent / MCP client calls to find ticket status. The MCP server gives a good response for 1 ticket id (481) where it gives malicious content for another ticket id (482), asking the LLM / MCP client to make unauthorized call to different tool not approved or not eligible for this user group.
 

@@ -101,6 +101,10 @@ A signed policy contains:
 5. A small JSON-Schema-style argument policy for every rule
 6. An Ed25519 signature over canonical JSON
 
+For the demo, policy is enforced to use **support-agents, support-managers** and also only Ticket ID 481, 482 are allowed. This will be used during the testing phase.
+![AgentTrust architecture](policy1.png)
+![AgentTrust architecture](policy2.png)
+
 ## Package layout
 ```
 agent_trust/
@@ -302,15 +306,9 @@ AgentTrust blocked call: True
 {"code": "tool_explicitly_denied", "error": "agent_trust_denied", "policy_id": "support-mcp-policy", "reason": "Tool 'email.send' is <img width="468" height="643" alt="image" src="https://github.com/user-attachments/assets/8c286a75-2a90-49a4-966e-792508fee0f8" />
 ```
 
-To inspect authorization decisions in another terminal, run:
+To inspect the audit logs
+![AgentTrust architecture](audit.png)
 
-```
-    tail -f config/audit.jsonl
-```
-
-Because --audit-log is configured, allow and deny decisions are written to  
-that file instead of the relay terminal. Stop tail and the relay with  
-Ctrl+C, and remove the JWT from the client shell when finished:
 
 ```
     unset AGENTTRUST_JWT

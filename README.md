@@ -9,6 +9,87 @@ over stdio or Streamable HTTP; the approved upstream remains a stdio server.
 This model is intentionally not session-based. A policy can be reused by
 independent relay processes until it expires.
 
+## Overview
+
+A trusted administrator, working through the pink **Admin UI**, produces one
+artifact: a signed policy. The yellow **AgentTrust Gatekeeper** (the relay
+process) only ever reads that policy — it never writes to it — and asks its
+internal Policy Gate to authorize every call before an MCP client's request
+reaches an upstream MCP server. The two sides only communicate through the
+files handed from Admin UI to Gatekeeper; there is no direct connection
+between them.
+
+![AgentTrust architecture](docs/architecture.png)
+
+## Key Concepts
+
+### MCP Client / AI Agents
+
+The caller — `mcp_client.py` in this repo, an LLM-driven client (via
+OpenRouter) — connects to the Gatekeeper over Streamable HTTP with a bearer
+JWT. (Stdio is also supported, using a static principal instead of a JWT; not
+shown in this diagram.)
+
+### AgentTrust Gatekeeper
+
+The relay process (`agent-trust-relay`). It loads a signed policy once,
+verifies it, spawns the approved upstream MCP server, and runs every proposed
+call through the boxes below before forwarding anything.
+
+- **JWT Authentication** — `LocalJwtVerifier`
+  (`agent_trust/gateway/local_jwt.py`): verifies a bearer token via local
+  HS256 against a shared secret file. This is explicitly a development-only
+  mechanism, not OAuth or OIDC — production-grade OIDC/JWKS authentication is
+  a disclosed, not-yet-built roadmap item (see "Gateway roadmap placeholders"
+  below).
+- **Audit Logger** — `AuditWriter`: appends one JSON line per authorization
+  decision to `config/audit.jsonl`, whether allowed or denied.
+- **Policy Verifier** — `verify_policy()`: checks the signature, key ID,
+  audience, and expiry. This runs on *every* call, not only at startup.
+- **Custom Verifier** — a **planned extension point, not yet implemented**.
+  The intended shape (discussed but not built): an admin-approved,
+  hash-pinned custom validation function attached to a specific tool rule,
+  running after the schema check for business logic a static JSON Schema
+  can't express. Kept in this diagram to show where it will plug in once
+  built.
+- **Authorisation Gatekeeper** — `PolicyGate.check()`: matches the server and
+  descriptor fingerprint, matches the caller's principal/groups against each
+  tool rule's subjects, applies deny-before-allow precedence, then validates
+  arguments against the matching allow rule's schema.
+
+### MCP Servers
+
+The upstream MCP server(s) a policy can approve — `demo_support_mcp` in this
+repo. One relay process fronts exactly one *selected* server at a time
+(`--server-id` picks which, when a policy names more than one); the
+stacked/plural box represents the set of servers a policy can approve, not
+several servers served concurrently by one relay.
+
+### Trust Files (Public key, Signed Policies)
+
+What actually flows from the Admin UI to the Gatekeeper: `config/policy.json`
+(signed) and `config/keyring.json` (the public verification key only). The
+relay separately also needs `config/local-jwt-secret` to verify JWTs — a
+different, similarly local-only trust file not drawn in this diagram. The
+private `config/signing-key.pem` never crosses to the Gatekeeper at all; it
+stays on the Admin UI side.
+
+### Admin UI
+
+The local Streamlit app (`agent-trust-admin`). Everything below re-signs the
+policy with the existing key on every change.
+
+- **MCP Registry** — not a separate database; this is the `approved_servers`
+  list inside the signed policy itself, edited through
+  `agent_trust/admin/service.py`'s append/update/delete functions.
+- **Policy Generator** — `agent-trust-generate`
+  (`agent_trust/cli/generate.py`): the bootstrapping tool that creates a
+  brand-new policy, keyring, and signing key from scratch.
+- **Policy Signer** — `sign_policy()`: used by both the Policy Generator and
+  every Admin UI edit, re-signing the complete policy with the same key.
+- **Audit reviewer** — the Admin UI's "Audit logs" tab
+  (`load_audit_events`): reads and summarizes `config/audit.jsonl`.
+
 ## Security boundary
 
 AgentTrust answers four questions:
@@ -98,8 +179,9 @@ Node.js, and a separate database are not required.
 
 ## End-to-end Streamable HTTP quickstart
 
-This walkthrough generates a signed policy, creates a development JWT, starts
-the authenticated relay, and connects an MCP client. Run every command from the
+This walkthrough creates the relay's local JWT server key, generates a signed
+policy, starts the Admin UI to review it, starts the authenticated relay, then
+mints a token and runs the demo MCP client. Run every command from the
 repository root.
 
 ### 1. Install dependencies
@@ -112,7 +194,22 @@ uv sync
 `unset VIRTUAL_ENV` avoids uv selecting an unrelated active virtual
 environment. It is unnecessary if no other environment is active.
 
-### 2. Generate the signed policy
+### 2. Create the JWT server key
+
+Create the relay's local HS256 signing secret once. This is the *server*
+key the relay uses to verify tokens — not a token itself, and never given to
+an MCP client:
+
+```bash
+openssl rand -hex 32 > config/local-jwt-secret
+chmod 600 config/local-jwt-secret
+```
+
+The secret is ignored by this repository's `.gitignore`. You'll mint an actual
+token from it in step 6, once the relay is up and you're ready to run the
+demo — tokens are short-lived, so there's no benefit to minting one early.
+
+### 3. Generate the signed policy
 
 The policy embeds the approved upstream command, ordered arguments, working
 directory, tool rules, and subject rules. The relay will not accept runtime
@@ -142,32 +239,24 @@ AgentTrust rejects it and records the denial in `config/audit.jsonl`. MCP
 content does not execute tools by itself—the client or model must make the
 attempted `tools/call`.
 
-### 3. Create the JWT secret and mint a token
+### 4. Start the Admin UI
 
-Create a local HS256 signing secret once:
-
-```bash
-openssl rand -hex 32 > config/local-jwt-secret
-chmod 600 config/local-jwt-secret
-```
-
-The secret is ignored by this repository's `.gitignore`. Do not give it to an
-MCP client. Mint a test token whose group matches the policy:
+In its own terminal, review the policy you just generated (and optionally add,
+edit, or delete approved MCP servers) before starting the relay:
 
 ```bash
-uv run agent-trust-mint-jwt \
-  --secret-file config/local-jwt-secret \
-  --issuer agenttrust-local \
-  --audience http://127.0.0.1:8000/mcp \
-  --name test-agent \
-  --group support-managers \
-  --lifetime-seconds 3600
+uv run agent-trust-admin
 ```
 
-Copy the token printed by this command. The issuer and audience must exactly
-match the relay options in the next step. Mint another token after it expires.
+Open `http://127.0.0.1:8501` and sign in with the local demo credentials
+(`admin` / `password` by default — see [Local admin UI](#local-admin-ui) below
+for how to override them, and for the full add/edit/delete workflow). This
+step is optional — the relay only needs `config/policy.json` and
+`config/keyring.json` on disk — but it's the easiest way to confirm the policy
+you generated actually looks the way you expect before anything starts
+enforcing it.
 
-### 4. Start the relay
+### 5. Start the relay
 
 Run the relay in its own terminal and leave it running:
 
@@ -190,7 +279,22 @@ The relay should report that Uvicorn is listening on
 CallToolRequest` confirm that requests reached the relay. Tool results are
 returned to the MCP client; they are not printed in the relay terminal.
 
-### 5. Connect an MCP client with the JWT
+### 6. Mint a token and run the demo
+
+Mint a test token whose group matches the policy:
+
+```bash
+uv run agent-trust-mint-jwt \
+  --secret-file config/local-jwt-secret \
+  --issuer agenttrust-local \
+  --audience http://127.0.0.1:8000/mcp \
+  --name test-agent \
+  --group support-managers \
+  --lifetime-seconds 3600
+```
+
+Copy the token printed by this command. The issuer and audience must exactly
+match the relay options from step 5. Mint another token after it expires.
 
 In a second terminal, place the token—not the signing secret—in an environment
 variable:
@@ -234,7 +338,10 @@ requires TLS and validation against a trusted OIDC/JWKS identity provider.
 
 ## Local admin UI
 
-Start the Streamlit policy administrator from the repository root:
+This is step 4 of the [quickstart](#end-to-end-streamable-http-quickstart)
+above, expanded — the full add/edit/delete workflow, environment variable
+overrides, and what the UI does and doesn't verify. Start the Streamlit policy
+administrator from the repository root:
 
 ```bash
 uv run agent-trust-admin

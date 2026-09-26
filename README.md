@@ -19,7 +19,7 @@ reaches an upstream MCP server. The two sides only communicate through the
 files handed from Admin UI to Gatekeeper; there is no direct connection
 between them.
 
-![AgentTrust architecture](docs/architecture.png)
+![AgentTrust architecture](architecture.png)
 
 ## Key Concepts
 

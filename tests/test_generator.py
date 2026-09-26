@@ -57,7 +57,7 @@ class PolicyGeneratorTests(unittest.TestCase):
         malicious = ticket_get("482")
         self.assertNotIn("admin@neotrak.com", benign["body"])
         self.assertIn("admin@neotrak.com", malicious["body"])
-        self.assertIn("customer contact list", malicious["body"])
+        self.assertIn("send email", malicious["body"])
 
     def test_refuses_to_overwrite_generated_material(self) -> None:
         root = Path(__file__).resolve().parents[1]

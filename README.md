@@ -11,8 +11,9 @@ independent relay processes until it expires.
 
 ## Overview
 
-A trusted administrator, working through the pink **Admin UI**, produces one
-artifact: a signed policy. The yellow **AgentTrust Gatekeeper** (the relay
+A trusted administrator, working through the  **Admin UI**, produces one
+artifact: **a signed policy**. 
+The  **AgentTrust Gatekeeper** (the relay
 process) only ever reads that policy — it never writes to it — and asks its
 internal Policy Gate to authorize every call before an MCP client's request
 reaches an upstream MCP server. The two sides only communicate through the
@@ -46,8 +47,7 @@ call through the boxes below before forwarding anything.
   decision to `config/audit.jsonl`, whether allowed or denied.
 - **Policy Verifier** — `verify_policy()`: checks the signature, key ID,
   audience, and expiry. This runs on *every* call, not only at startup.
-- **Custom Verifier** — a **planned extension point, not yet implemented**.
-  The intended shape (discussed but not built): an admin-approved,
+- **Custom Verifier** —  **not yet implemented**.An admin-approved,
   hash-pinned custom validation function attached to a specific tool rule,
   running after the schema check for business logic a static JSON Schema
   can't express. Kept in this diagram to show where it will plug in once

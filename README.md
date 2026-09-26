@@ -144,7 +144,7 @@ policy, starts the Admin UI to review it, starts the authenticated relay, then
 mints a token and runs the demo MCP client. Run every command from the  
 agent-trust directory
 
-### 1\. Install dependencies
+### Install dependencies
 
 ```
     unset VIRTUAL_ENV
@@ -155,7 +155,7 @@ agent-trust directory
 unset VIRTUAL_ENV avoids uv selecting an unrelated active virtual  
 environment. It is unnecessary if no other environment is active.
 
-### 2\. Create the JWT server key
+### Create the JWT server key
 
 Create the relay's local HS256 signing secret once. This is the _server_  
 key the relay uses to verify tokens — not a token itself, and never given to  
@@ -166,7 +166,7 @@ an MCP client:
     chmod 600 config/local-jwt-secret
 ```
 
-### 3\. Generate the signed policy
+### Generate the signed policy
 
 The policy embeds the approved upstream command, ordered arguments, working  
 directory, tool rules, and subject rules. The relay will not accept runtime  
@@ -188,7 +188,7 @@ config/signing-key.pem. Existing files are not overwritten. If these files
 already exist and are still valid, reuse them. Use --force only when you  
 intend to rotate and replace all three policy files.
 
-### 4\. Start the relay
+### Start the relay
 
 Run the relay in its own terminal and leave it running:
 
@@ -211,7 +211,37 @@ The relay should report that Uvicorn is listening on
 CallToolRequest confirm that requests reached the relay. Tool results are  
 returned to the MCP client; they are not printed in the relay terminal.
 
-### 5\. Generate a JWT token and run the demo
+
+##  Local admin UI
+
+```
+    uv run agent-trust-admin
+```
+
+Open <http://127.0.0.1:8501> and sign in with the local demo credentials:
+
+```
+    Username: admin
+    Password: password
+```
+
+Override both values before any shared use:
+```bash
+export AGENTTRUST_ADMIN_USERNAME='local-admin'
+export AGENTTRUST_ADMIN_PASSWORD='replace-with-a-strong-password'
+uv run agent-trust-admin
+```
+The UI verifies `config/policy.json` against `config/keyring.json`, shows the approved MCP descriptors and tool rules, and lets you manage servers:
+
+- **Add MCP server** — command, working directory, launch arguments (one per line), a shared JSON argument schema, and one row per tool rule (effect, name, principals, groups). Paths are stored relative to the repository; absolute inputs are converted automatically. The UI does **not** verify the command or directory exists — an invalid path only fails when the relay later selects that server. Run the UI and relay from the `agent-trust` root so both resolve paths the same way.
+- **Delete** — removes a server after confirmation; the last remaining server can't be deleted (a policy must approve at least one).
+- **Audit logs** — reads `config/audit.jsonl`: principal, groups, server, tool, decision, reason, arguments; Refresh reloads it.
+
+Every change updates `policy_specs/admin_policy.json`, backs up the previous policy to `config/policy.json.bak`, and re-signs with `config/signing-key.pem`. The read-only JSON view below hides your absolute repository path.
+
+The UI never launches the MCP process itself — restart the relay after any change, and pass `--server-id` if the policy approves more than one server.
+
+###  Generate a JWT token and run the demo
 
 Create a test token whose group matches the policy:
 
@@ -267,35 +297,6 @@ Ctrl+C, and remove the JWT from the client shell when finished:
 Local HS256 JWT mode is for development only. Anyone with  
 config/local-jwt-secret can mint any principal or group. Production use  
 requires TLS and validation against a trusted OIDC/JWKS identity provider.
-
-## 6\. Local admin UI
-
-```
-    uv run agent-trust-admin
-```
-
-Open <http://127.0.0.1:8501> and sign in with the local demo credentials:
-
-```
-    Username: admin
-    Password: password
-```
-
-Override both values before any shared use:
-```bash
-export AGENTTRUST_ADMIN_USERNAME='local-admin'
-export AGENTTRUST_ADMIN_PASSWORD='replace-with-a-strong-password'
-uv run agent-trust-admin
-```
-The UI verifies `config/policy.json` against `config/keyring.json`, shows the approved MCP descriptors and tool rules, and lets you manage servers:
-
-- **Add MCP server** — command, working directory, launch arguments (one per line), a shared JSON argument schema, and one row per tool rule (effect, name, principals, groups). Paths are stored relative to the repository; absolute inputs are converted automatically. The UI does **not** verify the command or directory exists — an invalid path only fails when the relay later selects that server. Run the UI and relay from the `agent-trust` root so both resolve paths the same way.
-- **Delete** — removes a server after confirmation; the last remaining server can't be deleted (a policy must approve at least one).
-- **Audit logs** — reads `config/audit.jsonl`: principal, groups, server, tool, decision, reason, arguments; Refresh reloads it.
-
-Every change updates `policy_specs/admin_policy.json`, backs up the previous policy to `config/policy.json.bak`, and re-signs with `config/signing-key.pem`. The read-only JSON view below hides your absolute repository path.
-
-The UI never launches the MCP process itself — restart the relay after any change, and pass `--server-id` if the policy approves more than one server.
 
 ## Gateway roadmap placeholders
 

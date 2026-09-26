@@ -282,9 +282,9 @@ Open <http://127.0.0.1:8501> and sign in with the local demo credentials:
 ```
 
 Override both values before any shared use:
-```
-export AGENTTRUST_ADMIN_USERNAME='local-admin'  
-export AGENTTRUST_ADMIN_PASSWORD= &lt;a-strong-password&gt;  
+```bash
+export AGENTTRUST_ADMIN_USERNAME='local-admin'
+export AGENTTRUST_ADMIN_PASSWORD='replace-with-a-strong-password'
 uv run agent-trust-admin
 ```
 The UI verifies `config/policy.json` against `config/keyring.json`, shows the approved MCP descriptors and tool rules, and lets you manage servers:

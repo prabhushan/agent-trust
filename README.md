@@ -322,7 +322,7 @@ uv run agent-trust-mint-jwt \
 --name bob --group support-managers \
 --lifetime-seconds 360000
 ```
-Testing with MCP Client LLM
+Testing with MCP Client LLM **(NEED OPENROUTER API KEY)**
 ```
 export OPENROUTER_API_KEY=sk-or-v1-XXXXXXXXXXX
 uv run python mcp_client_llm.py 482 

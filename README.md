@@ -1,6 +1,6 @@
 # AgentTrust
 
-**AgentTrust** is a policy-enforcing relay between MCP clients and approved MCP servers. It verifies signed policies, authenticates callers, filters available tools, and authorizes tool calls using principal, group, and argument constraints. It records authorization decisions for review.
+**AgentTrust** is a policy-enforcing **AI gateway** between MCP clients and approved MCP servers. It verifies signed policies, authenticates callers, filters available tools, and authorizes tool calls using principal, group, and argument constraints. It records authorization decisions for review.
 
 #### Overview
 

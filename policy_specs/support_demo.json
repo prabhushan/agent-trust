@@ -11,6 +11,7 @@
         "type": "object",
         "properties": {
           "ticket_id": {
+            "type": "string",
             "enum": ["481", "482"]
           }
         },

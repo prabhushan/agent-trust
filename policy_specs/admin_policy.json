@@ -27,7 +27,8 @@
                 "enum": [
                   "481",
                   "482"
-                ]
+                ],
+                "type": "string"
               }
             },
             "required": [
@@ -73,17 +74,6 @@
             "principals": [
               "local-agent"
             ]
-          }
-        },
-        {
-          "arguments_schema": {},
-          "effect": "deny",
-          "name": "summary.save_draft",
-          "subjects": {
-            "groups": [
-              "support-agents"
-            ],
-            "principals": []
           }
         },
         {

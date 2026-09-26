@@ -16,6 +16,7 @@ from agent_trust.admin.service import (
     delete_mcp_server,
     load_audit_events,
     load_policy_snapshot,
+    update_mcp_server,
 )
 from agent_trust.core.policy import PolicyError, SubjectSelector, ToolRule, thaw_json
 
@@ -180,49 +181,79 @@ def _render_policy(paths: AdminPaths, snapshot: Any) -> None:
                 ):
                     st.session_state["agenttrust_delete_candidate"] = server.server_id
                     st.rerun()
-            transport, working_directory = st.columns(2)
-            transport.text_input(
-                "Transport", value="stdio", disabled=True, key=f"{field_prefix}-transport"
-            )
-            working_directory.text_input(
-                "Working directory",
-                value=_relative_path(server.descriptor.cwd or str(project_root), project_root),
-                disabled=True,
-                key=f"{field_prefix}-cwd",
-            )
-            st.text_input(
-                "Command",
-                value=_relative_path(
-                    server.descriptor.command,
-                    server.descriptor.cwd or project_root,
-                ),
-                disabled=True,
-                key=f"{field_prefix}-command",
-            )
-            st.text_area(
-                "Launch arguments",
-                value="\n".join(server.descriptor.args) or "(none)",
-                disabled=True,
-                key=f"{field_prefix}-args",
-                height=100,
-            )
-            st.text_input(
-                "Descriptor SHA-256",
-                value=server.descriptor_sha256,
-                disabled=True,
-                key=f"{field_prefix}-fingerprint",
-            )
-            rows = [
+            st.text_input("Transport", value="stdio", disabled=True, key=f"{field_prefix}-transport")
+            st.caption(f"Descriptor SHA-256 (recomputed automatically on save): `{server.descriptor_sha256}`")
+
+            tool_rows = [
                 {
                     "Effect": tool.effect,
-                    "Tool": tool.name,
+                    "Tool name": tool.name,
                     "Principals": ", ".join(tool.subjects.principals),
                     "Groups": ", ".join(tool.subjects.groups),
                     "Argument schema": json.dumps(thaw_json(tool.arguments_schema), sort_keys=True),
                 }
                 for tool in server.tools
             ]
-            st.dataframe(rows, width="stretch", hide_index=True)
+            with st.form(f"{field_prefix}-edit-form"):
+                cwd_value = st.text_input(
+                    "Working directory",
+                    value=_relative_path(server.descriptor.cwd or str(project_root), project_root),
+                    key=f"{field_prefix}-cwd",
+                )
+                command_value = st.text_input(
+                    "Command",
+                    value=_relative_path(server.descriptor.command, server.descriptor.cwd or project_root),
+                    key=f"{field_prefix}-command",
+                )
+                args_text = st.text_area(
+                    "Launch arguments (one per line, in order)",
+                    value="\n".join(server.descriptor.args),
+                    key=f"{field_prefix}-args",
+                    height=100,
+                )
+                st.markdown("#### Tool authorization rules")
+                edited_rows = st.data_editor(
+                    tool_rows,
+                    num_rows="dynamic",
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "Effect": st.column_config.SelectboxColumn(
+                            "Effect", options=["allow", "deny"], required=True
+                        ),
+                        "Tool name": st.column_config.TextColumn("Tool name", required=True),
+                        "Principals": st.column_config.TextColumn("Principals (comma-separated)"),
+                        "Groups": st.column_config.TextColumn("Groups (comma-separated)"),
+                        "Argument schema": st.column_config.TextColumn("Argument schema (JSON)"),
+                    },
+                    key=f"{field_prefix}-tools",
+                )
+                save_submitted = st.form_submit_button("Save changes", type="primary")
+
+            if save_submitted:
+                try:
+                    rule_rows = edited_rows.to_dict("records") if hasattr(edited_rows, "to_dict") else edited_rows
+                    tools = parse_tool_rows(rule_rows)
+                    saved = update_mcp_server(
+                        paths=paths,
+                        expected_signature=policy.signature,
+                        server_id=server.server_id,
+                        command=command_value.strip(),
+                        args=tuple(line for line in args_text.splitlines() if line != ""),
+                        cwd=cwd_value.strip(),
+                        tools=tools,
+                    )
+                except (PolicyError, OSError) as exc:
+                    st.error(_safe_error(exc))
+                else:
+                    st.session_state["agenttrust_save_result"] = {
+                        "operation": "Updated",
+                        "server_id": server.server_id,
+                        "expires_at": saved.policy.expires_at,
+                        "server_count": len(saved.policy.approved_servers),
+                    }
+                    st.rerun()
+
             if delete_candidate == server.server_id:
                 st.warning(
                     f"Delete {server.server_id}? This regenerates and re-signs the policy."

@@ -24,6 +24,7 @@ from agent_trust.admin.service import (
     load_audit_events,
     load_policy_snapshot,
     policy_manifest,
+    update_mcp_server,
     validate_new_server,
 )
 from agent_trust.cli.admin import main as admin_cli_main
@@ -175,6 +176,20 @@ class AdminPolicyServiceTests(unittest.TestCase):
         values.update(overrides)
         return append_mcp_server(**values)
 
+    def _update(self, **overrides: object):
+        snapshot = load_policy_snapshot(self.paths)
+        values = {
+            "paths": self.paths,
+            "expected_signature": snapshot.policy.signature,
+            "server_id": "support-mcp",
+            "command": str(Path(sys.executable).absolute()),
+            "args": ("-m", "demo_support_mcp.server"),
+            "cwd": str(self.root),
+            "tools": (tool_rule("ticket.get"), tool_rule("summary.save_draft")),
+        }
+        values.update(overrides)
+        return update_mcp_server(**values)
+
     def test_loads_verified_policy_and_environment_paths(self) -> None:
         snapshot = load_policy_snapshot(self.paths)
         self.assertEqual(snapshot.policy.policy_id, "admin-policy")
@@ -235,6 +250,32 @@ class AdminPolicyServiceTests(unittest.TestCase):
                 for server in saved.policy.approved_servers
             )
         )
+
+    def test_updates_server_resigns_in_place_with_same_key_and_writes_manifest(self) -> None:
+        original = self.paths.policy.read_bytes()
+        original_public_key = self.paths.keyring.read_text(encoding="utf-8")
+        saved = self._update(args=("-m", "demo_support_mcp.server", "--extra-flag"))
+        self.assertEqual([server.server_id for server in saved.policy.approved_servers], ["support-mcp"])
+        updated_server = saved.policy.approved_servers[0]
+        self.assertEqual(
+            [tool.name for tool in updated_server.tools], ["ticket.get", "summary.save_draft"]
+        )
+        self.assertIn("--extra-flag", updated_server.descriptor.args)
+        verify_policy(saved.policy, saved.trusted_keys)
+        # Re-signed with the same key: the keyring on disk is untouched.
+        self.assertEqual(self.paths.keyring.read_text(encoding="utf-8"), original_public_key)
+        self.assertEqual(
+            json.loads(self.paths.manifest.read_text(encoding="utf-8")),
+            policy_manifest(saved.policy),
+        )
+        self.assertEqual(self.paths.policy.with_name("policy.json.bak").read_bytes(), original)
+
+    def test_update_rejects_unknown_server_without_writes(self) -> None:
+        original = self.paths.policy.read_bytes()
+        with self.assertRaisesRegex(PolicyError, "Unknown MCP server ID"):
+            self._update(server_id="ghost-mcp")
+        self.assertEqual(self.paths.policy.read_bytes(), original)
+        self.assertFalse(self.paths.manifest.exists())
 
     def test_rejects_concurrent_change_and_manifest_divergence(self) -> None:
         snapshot = load_policy_snapshot(self.paths)

@@ -165,18 +165,15 @@ def _load_matching_private_key(
     return private_key
 
 
-def validate_new_server(
+def _build_server_rule(
     *,
-    policy: SignedMcpPolicy,
     server_id: str,
     command: str,
     args: Sequence[str],
     cwd: str,
     tools: Sequence[ToolRule],
 ) -> ServerRule:
-    """Validate an admin form submission and construct its signed server rule."""
-    if server_id in {server.server_id for server in policy.approved_servers}:
-        raise PolicyError(f"Server ID {server_id!r} already exists in the policy")
+    """Construct a signed server rule from admin form fields, normalizing paths."""
     cwd_value = cwd.strip()
     if not cwd_value:
         raise PolicyError("MCP working directory is required")
@@ -207,6 +204,36 @@ def validate_new_server(
         descriptor_sha256=fingerprint_server_descriptor(descriptor),
         tools=tuple(tools),
     )
+
+
+def validate_new_server(
+    *,
+    policy: SignedMcpPolicy,
+    server_id: str,
+    command: str,
+    args: Sequence[str],
+    cwd: str,
+    tools: Sequence[ToolRule],
+) -> ServerRule:
+    """Validate an admin form submission for a server that must not exist yet."""
+    if server_id in {server.server_id for server in policy.approved_servers}:
+        raise PolicyError(f"Server ID {server_id!r} already exists in the policy")
+    return _build_server_rule(server_id=server_id, command=command, args=args, cwd=cwd, tools=tools)
+
+
+def validate_updated_server(
+    *,
+    policy: SignedMcpPolicy,
+    server_id: str,
+    command: str,
+    args: Sequence[str],
+    cwd: str,
+    tools: Sequence[ToolRule],
+) -> ServerRule:
+    """Validate an admin form submission that replaces an already-approved server."""
+    if server_id not in {server.server_id for server in policy.approved_servers}:
+        raise PolicyError(f"Unknown MCP server ID: {server_id!r}")
+    return _build_server_rule(server_id=server_id, command=command, args=args, cwd=cwd, tools=tools)
 
 
 def _relative_server_rule(server: ServerRule) -> ServerRule:
@@ -320,6 +347,55 @@ def append_mcp_server(
         approved_servers=[
             *(_relative_server_rule(server) for server in current.policy.approved_servers),
             new_server,
+        ],
+        lifetime=current.validity,
+    )
+    manifest_json = json.dumps(policy_manifest(updated), indent=2, sort_keys=True) + "\n"
+    _commit_policy_and_manifest(
+        policy_path=paths.policy,
+        manifest_path=paths.manifest,
+        policy_json=updated.to_json() + "\n",
+        manifest_json=manifest_json,
+    )
+    saved = load_policy_snapshot(paths)
+    if saved.policy.signature != updated.signature:
+        raise PolicyError("Saved policy did not match the policy produced by the administrator")
+    _require_manifest_synchronized(paths.manifest, saved.policy)
+    return saved
+
+
+def update_mcp_server(
+    *,
+    paths: AdminPaths,
+    expected_signature: str,
+    server_id: str,
+    command: str,
+    args: Sequence[str],
+    cwd: str,
+    tools: Sequence[ToolRule],
+) -> PolicySnapshot:
+    """Replace one already-approved server's descriptor and tools, then re-sign in place."""
+    current = load_policy_snapshot(paths)
+    if not expected_signature or current.policy.signature != expected_signature:
+        raise PolicyError("Policy changed after it was loaded; refresh before saving")
+    _require_manifest_synchronized(paths.manifest, current.policy)
+    private_key = _load_matching_private_key(paths.signing_key, current.policy, current.trusted_keys)
+    updated_server = validate_updated_server(
+        policy=current.policy,
+        server_id=server_id,
+        command=command,
+        args=args,
+        cwd=cwd,
+        tools=tools,
+    )
+    updated = sign_policy(
+        private_key=private_key,
+        policy_id=current.policy.policy_id,
+        issuer=current.policy.issuer,
+        key_id=current.policy.key_id,
+        approved_servers=[
+            updated_server if server.server_id == server_id else _relative_server_rule(server)
+            for server in current.policy.approved_servers
         ],
         lifetime=current.validity,
     )
